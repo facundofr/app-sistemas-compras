@@ -1,0 +1,33 @@
+# DOMAIN viene del .env:
+#   - Un dominio (miplancober.com): Caddy saca y renueva el certificado HTTPS solo,
+#     y redirige http:// a https:// automáticamente.
+#   - ":80": sirve por HTTP en la IP del servidor (útil para probar antes de tener dominio).
+#
+# La app vive en /asistente-sistemas (basePath de next.config.ts: tienen que coincidir).
+# La ruta NO se recorta al pasarla a la app: Next.js la espera completa.
+{$DOMAIN} {
+	encode zstd gzip
+
+	request_body {
+		max_size 100MB
+	}
+
+	header {
+		# Solo tiene efecto por HTTPS; los navegadores lo ignoran por HTTP.
+		Strict-Transport-Security "max-age=31536000"
+		X-Frame-Options "SAMEORIGIN"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		X-Content-Type-Options "nosniff"
+		-Server
+	}
+
+	handle /asistente-sistemas* {
+		reverse_proxy app:3000
+	}
+
+	# Todo lo demás del dominio lleva a la app.
+	# Si el dominio tuviera otro sitio en la raíz, reemplazá este bloque por ese sitio.
+	handle {
+		redir * /asistente-sistemas 302
+	}
+}

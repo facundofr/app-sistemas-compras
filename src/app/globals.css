@@ -1,0 +1,180 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-heading: var(--font-space), var(--font-inter), ui-sans-serif, sans-serif;
+  --font-mono: var(--font-plex), ui-monospace, monospace;
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+
+  --color-gold: var(--gold);
+  --color-gold-soft: var(--gold-soft);
+  --color-gold-foreground: var(--gold-foreground);
+  --color-teal-soft: var(--teal-soft);
+  --color-rust-soft: var(--rust-soft);
+  --color-estado-solicitado: var(--estado-solicitado);
+  --color-estado-cotizando: var(--estado-cotizando);
+  --color-estado-comprando: var(--estado-comprando);
+  --color-estado-entregado: var(--estado-entregado);
+
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+/* Paleta Grupo Cober: tinta, verde azulado y dorado. La barra lateral es oscura en ambos temas. */
+:root {
+  --background: #f5f4f0;
+  --foreground: #1b2027;
+  --card: #ffffff;
+  --card-foreground: #1b2027;
+  --popover: #ffffff;
+  --popover-foreground: #1b2027;
+  --primary: #1b7a72;
+  --primary-foreground: #ffffff;
+  --secondary: #edebe5;
+  --secondary-foreground: #1b2027;
+  --muted: #efede8;
+  --muted-foreground: #5f6874;
+  --accent: #e4efec;
+  --accent-foreground: #145048;
+  --destructive: #b94a3c;
+  --border: #e3e0d8;
+  --input: #d9d5cb;
+  --ring: #1b7a72;
+  --chart-1: #1b7a72;
+  --chart-2: #c98a2c;
+  --chart-3: #57878a;
+  --chart-4: #b94a3c;
+  --chart-5: #93a0ac;
+  --radius: 0.625rem;
+
+  --sidebar: #12181f;
+  --sidebar-foreground: #b7bec8;
+  --sidebar-primary: #1b7a72;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #1c2530;
+  --sidebar-accent-foreground: #ffffff;
+  --sidebar-border: #232c37;
+  --sidebar-ring: #c98a2c;
+
+  --gold: #c98a2c;
+  --gold-soft: #f8ecd8;
+  --gold-foreground: #7a5314;
+  --teal-soft: #e4efec;
+  --rust-soft: #f7e6e2;
+
+  --estado-solicitado: #7d8a97;
+  --estado-cotizando: #4f8a91;
+  --estado-comprando: #1b7a72;
+  --estado-entregado: #b87a1f;
+}
+
+.dark {
+  --background: #0f141a;
+  --foreground: #e6e9ed;
+  --card: #161d25;
+  --card-foreground: #e6e9ed;
+  --popover: #161d25;
+  --popover-foreground: #e6e9ed;
+  --primary: #35a89c;
+  --primary-foreground: #04211e;
+  --secondary: #1f2832;
+  --secondary-foreground: #e6e9ed;
+  --muted: #1c242e;
+  --muted-foreground: #8e97a3;
+  --accent: #1a302d;
+  --accent-foreground: #cfeae6;
+  --destructive: #e0705f;
+  --border: #26303b;
+  --input: #2c3642;
+  --ring: #35a89c;
+  --chart-1: #35a89c;
+  --chart-2: #d9a04a;
+  --chart-3: #6fa3a6;
+  --chart-4: #e0705f;
+  --chart-5: #8e97a3;
+
+  --sidebar: #0b0f14;
+  --sidebar-foreground: #a9b1bc;
+  --sidebar-primary: #35a89c;
+  --sidebar-primary-foreground: #04211e;
+  --sidebar-accent: #161d25;
+  --sidebar-accent-foreground: #ffffff;
+  --sidebar-border: #1b232c;
+  --sidebar-ring: #d9a04a;
+
+  --gold: #d9a04a;
+  --gold-soft: #33281a;
+  --gold-foreground: #f0c987;
+  --teal-soft: #173430;
+  --rust-soft: #3a1f1b;
+
+  --estado-solicitado: #9aa6b2;
+  --estado-cotizando: #72aab0;
+  --estado-comprando: #35a89c;
+  --estado-entregado: #d9a04a;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: "cv11", "ss01";
+  }
+  html {
+    @apply font-sans;
+    color-scheme: light;
+  }
+  html.dark {
+    color-scheme: dark;
+  }
+  h1,
+  h2,
+  h3 {
+    @apply font-heading;
+  }
+}
+
+@utility tabular {
+  font-variant-numeric: tabular-nums;
+}

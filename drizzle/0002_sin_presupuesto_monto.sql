@@ -1,0 +1,1 @@
+ALTER TABLE "pedidos" DROP COLUMN "presupuesto";
