@@ -22,6 +22,20 @@
       "when": 1790347765349,
       "tag": "0002_sin_presupuesto_monto",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1791068248412,
+      "tag": "0003_mejoras",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1791069527473,
+      "tag": "0004_items_y_mercadolibre",
+      "breakpoints": true
     }
   ]
 }

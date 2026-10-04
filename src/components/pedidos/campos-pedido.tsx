@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { PRIORIDADES } from "@/lib/constants";
 import { DomicilioEntrega } from "./domicilio-entrega";
+import { ItemsEditor, type ItemValor } from "./items-editor";
 
 export type ValoresPedido = {
   fechaPedido?: string;
@@ -18,6 +19,8 @@ export type ValoresPedido = {
   producto?: string;
   cantidad?: number | string;
   link?: string | null;
+  /** Si viene, manda sobre producto/cantidad/link (pedidos con varios productos). */
+  items?: ItemValor[];
   comentarios?: string | null;
 };
 
@@ -33,12 +36,14 @@ export function CamposPedido({
   errores = {},
   opciones,
   archivos,
+  sugerencias,
 }: {
   valores: ValoresPedido;
   errores?: Record<string, string>;
   opciones: OpcionesPedido;
   /** Zona de «Presupuesto pedido por el sector» (solo al cargar un pedido nuevo). */
   archivos?: React.ReactNode;
+  sugerencias?: string[];
 }) {
   return (
     <div className="grid grid-cols-1 gap-x-4 gap-y-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -128,44 +133,15 @@ export function CamposPedido({
         />
       </Campo>
 
-      <Campo id="producto" label="Producto solicitado" requerido error={errores.producto} className="lg:col-span-2">
-        <Input
-          id="producto"
-          name="producto"
-          required
-          maxLength={500}
-          defaultValue={valores.producto}
-          placeholder="Ej: Monitor Full HD 22'' con HDMI y VGA"
-          aria-invalid={!!errores.producto || undefined}
+      <div className="sm:col-span-2 lg:col-span-3">
+        <ItemsEditor
+          iniciales={
+            valores.items ?? (valores.producto ? [{ producto: valores.producto, cantidad: valores.cantidad, link: valores.link }] : undefined)
+          }
+          errores={errores}
+          sugerencias={sugerencias}
         />
-      </Campo>
-      <Campo id="cantidad" label="Cantidad" requerido error={errores.cantidad}>
-        <Input
-          id="cantidad"
-          name="cantidad"
-          type="number"
-          inputMode="numeric"
-          min={1}
-          step={1}
-          required
-          defaultValue={valores.cantidad}
-          placeholder="Ej: 2"
-          aria-invalid={!!errores.cantidad || undefined}
-        />
-      </Campo>
-
-      <Campo id="link" label="Link" requerido error={errores.link} className="sm:col-span-2 lg:col-span-3">
-        <Input
-          id="link"
-          name="link"
-          inputMode="url"
-          required
-          maxLength={2000}
-          defaultValue={valores.link ?? ""}
-          placeholder="https://..."
-          aria-invalid={!!errores.link || undefined}
-        />
-      </Campo>
+      </div>
 
       {archivos && <div className="sm:col-span-2 lg:col-span-3">{archivos}</div>}
 

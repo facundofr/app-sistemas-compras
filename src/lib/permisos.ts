@@ -5,6 +5,9 @@ type P = { estado: Estado; cancelado: boolean; creadoPorId: number | null };
 
 export const gestionaCompras = (rol: Rol) => rol === "admin" || rol === "compras";
 
+/** Recepción solo recibe paquetes: no carga pedidos. */
+export const puedeCargarPedidos = (rol: Rol) => rol !== "recepcion";
+
 const esCreador = (u: U, p: P) => p.creadoPorId === u.id;
 
 /** Datos del pedido: Compras siempre; Sistemas solo el propio y mientras siga «Solicitado». */

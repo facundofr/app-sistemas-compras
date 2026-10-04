@@ -5,7 +5,7 @@
 //   En local:   DATABASE_URL=... node scripts/usuario.mjs <email> <contraseña> [rol] [nombre]
 //
 // Si el email ya existe, cambia la contraseña, lo reactiva y cierra sus sesiones.
-// Si no existe, lo crea con el rol indicado (admin | compras | sistemas; por defecto admin).
+// Si no existe, lo crea con el rol indicado (admin | compras | sistemas | recepcion; por defecto admin).
 
 import { randomBytes, scrypt } from "node:crypto";
 import pg from "pg";
@@ -21,8 +21,8 @@ if (password.length < 8) {
   console.error("La contraseña tiene que tener al menos 8 caracteres.");
   process.exit(1);
 }
-if (!["admin", "compras", "sistemas"].includes(rol)) {
-  console.error("Rol inválido. Usá admin, compras o sistemas.");
+if (!["admin", "compras", "sistemas", "recepcion"].includes(rol)) {
+  console.error("Rol inválido. Usá admin, compras, sistemas o recepcion.");
   process.exit(1);
 }
 

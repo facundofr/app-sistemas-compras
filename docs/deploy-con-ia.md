@@ -295,6 +295,16 @@ ssh -o BatchMode=yes USUARIO@IP 'cd DIR && docker compose up -d --build 2>&1 | t
 
 Después repetí el **paso 9**. Si la app no arranca por un error de migración (`docker compose logs app`), **no borres volúmenes**: mostrá el error y ofrecé restaurar el backup del paso 1 con `bash scripts/restaurar.sh backups/<carpeta>`.
 
+### Servicios opcionales (email, push, Mercado Libre, S3, Sentry)
+
+Se activan agregando variables al `.env` (ver la lista comentada en [`.env.example`](../.env.example)). Reglas:
+
+- **Agregá** las líneas nuevas al final del `.env` existente (`cat >> .env`); nunca lo pises ni cambies `POSTGRES_PASSWORD`.
+- Los valores los da la persona (contraseñas de SMTP, claves de Mercado Libre o S3): pedíselos, no los inventes, y no los imprimas en el chat.
+- Las claves push se generan una sola vez en el VPS: `docker compose exec app npx --yes web-push generate-vapid-keys`. Si se regeneran, cada usuario tiene que volver a activar los avisos.
+- Después: `docker compose up -d` (no hace falta `--build`) y verificá en la app, en **Administración → Integraciones**, que figuren activos.
+- Si se activa S3 en una instalación con archivos, copiá los existentes: `docker compose exec app node scripts/migrar-archivos-s3.mjs`. No borres el volumen `uploads` hasta que la persona confirme que los archivos viejos se abren bien.
+
 ## Problemas frecuentes
 
 | Síntoma | Causa probable | Solución |

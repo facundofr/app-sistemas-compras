@@ -6,8 +6,8 @@ Este documento explica **dónde** se guarda cada dato, **qué** datos se guardan
 
 | Qué | Dónde | En el VPS (Docker) | En desarrollo |
 |---|---|---|---|
-| Usuarios, sesiones, pedidos, historial, listas de opciones, metadatos de archivos | PostgreSQL 17 | volumen `pgdata` | contenedor `app-sistemas-db-1`, puerto 5433, volumen `pgdata-dev` |
-| Archivos subidos (presupuestos, fotos, facturas) | Disco | volumen `uploads` → `/app/uploads` | carpeta `uploads/` del proyecto |
+| Usuarios, sesiones, pedidos y sus productos, historial, notificaciones, listas de opciones, metadatos de archivos, cola de tareas | PostgreSQL 17 | volumen `pgdata` | contenedor `app-sistemas-db-1`, puerto 5433, volumen `pgdata-dev` |
+| Archivos subidos (presupuestos, fotos, facturas, fotos de recepción) | Disco, o S3 si está `S3_BUCKET` | volumen `uploads` → `/app/uploads` | carpeta `uploads/` del proyecto |
 | Certificados HTTPS | Disco (Caddy) | volúmenes `caddy_data` y `caddy_config` | no se usan |
 | Tema elegido, estado de la barra lateral, sesión | Navegador de cada usuario | — | — |
 
@@ -31,7 +31,11 @@ La estructura está definida en código, en [`src/db/schema.ts`](../src/db/schem
 erDiagram
   usuarios ||--o{ sesiones : "tiene"
   usuarios ||--o{ pedidos : "carga"
+  pedidos ||--|{ pedido_items : "incluye"
   pedidos ||--o{ adjuntos : "tiene"
+  usuarios ||--o{ notificaciones : "recibe"
+  pedidos ||--o{ notificaciones : "sobre"
+  usuarios ||--o{ suscripciones_push : "activa en sus dispositivos"
   pedidos ||--o{ historial : "registra"
   usuarios ||--o{ adjuntos : "sube"
   usuarios ||--o{ historial : "hace"
@@ -46,7 +50,7 @@ erDiagram
 | `nombre` | texto | Nombre y apellido |
 | `email` | texto, único | Usuario para ingresar (en minúsculas) |
 | `password_hash` | texto | **Hash scrypt** de la contraseña, con sal aleatoria. La contraseña en claro nunca se guarda |
-| `rol` | `admin` \| `compras` \| `sistemas` | Qué puede hacer |
+| `rol` | `admin` \| `compras` \| `sistemas` \| `recepcion` | Qué puede hacer. `recepcion` ve los pedidos y confirma entregas, pero no carga pedidos |
 | `activo` | booleano | Si está en `false`, no puede ingresar |
 | `ultimo_ingreso` | fecha y hora | Último login exitoso |
 | `created_at`, `updated_at` | fecha y hora | Alta y última modificación |
@@ -60,7 +64,7 @@ erDiagram
 |---|---|
 | `id` | **SHA-256 del token** de la cookie. El token en claro solo existe en el navegador del usuario |
 | `usuario_id` | A quién pertenece (si se borra el usuario, se borran sus sesiones) |
-| `expira_en` | Vencimiento: 30 días después del login |
+| `expira_en` | Vencimiento: 30 días. Se renueva con el uso: si le quedan menos de 15 días y la persona entra, vuelve a 30 |
 | `created_at` | Cuándo se inició |
 
 - **Se crea:** al ingresar.
@@ -82,9 +86,10 @@ erDiagram
 | `facturar_por` | Facturar por | texto (valor de la lista, o NA) |
 | `domicilio_entrega` | Domicilio de entrega | texto (opción de la lista o lo escrito en «Otro») |
 | `prioridad` | Prioridad | `Baja` \| `Media` \| `Alta` \| `Urgente` |
-| `producto` | Producto solicitado | texto |
-| `cantidad` | Cantidad | entero ≥ 1 |
-| `link` | Link | texto libre |
+| `producto` | Producto solicitado | texto. Con varios productos es un resumen: «Monitor 24'' y 2 productos más» |
+| `cantidad` | Cantidad | entero ≥ 1. Con varios productos, el total de unidades |
+| `link` | Link | texto libre (el del primer producto) |
+| — | Cada producto del pedido | tabla `pedido_items` |
 | `comentarios` | Comentarios adicionales | texto |
 | — | Presupuesto pedido por el sector | los archivos van a la tabla `adjuntos` (tipo `referencia`) |
 
@@ -107,11 +112,14 @@ erDiagram
 | `proveedor`, `cuit` | Proveedor y su CUIT |
 | `fecha_compra` | Se completa sola con la fecha del día al pasar a «Comprando», si estaba vacía |
 | `fecha_entrega` | Se completa sola al pasar a «Entregado», si estaba vacía |
+| `fecha_estimada` | Cuándo debería llegar. Alimenta «Llega el jueves 08/10» y la alerta de entrega atrasada |
 | `codigo_seguimiento` | Código de seguimiento o palabra clave |
+| `ml_orden`, `ml_envio_estado` | N° de orden de Mercado Libre y último estado del envío informado por su API |
 | `medio_pago`, `cuotas` | Tarjeta o medio de pago, y cantidad de cuotas |
 | `importe` | Importe total, numérico con 2 decimales |
 | `factura_numero`, `tipo_factura`, `factura_link` | Datos de la factura (el archivo va a `adjuntos`, tipo `factura`) |
 | `notas_compras` | Notas internas de Compras |
+| `calificacion`, `comentario_recepcion` | Cómo llegó (1 a 5) y qué pasó, según quien lo recibió. Alimentan «Cumplimiento de proveedores» en Reportes |
 
 **Cómo se usan estos datos:**
 - **«Compras efectuadas»:** muestra los pedidos no cancelados que están en «Comprando» o «Entregado».
@@ -125,11 +133,11 @@ La base guarda solo los **datos del archivo**. El contenido va al disco.
 |---|---|
 | `id` | UUID. Es lo que aparece en la URL `/api/archivos/<id>` |
 | `pedido_id` | A qué pedido pertenece |
-| `tipo` | `referencia` (presupuesto o archivos del sector) o `factura` |
+| `tipo` | `referencia` (presupuesto o archivos del sector), `factura` o `recepcion` (foto del paquete al recibirlo) |
 | `nombre` | Nombre original del archivo, tal como lo subió el usuario |
 | `mime` | Tipo real detectado por el contenido, no por lo que dice el navegador |
 | `tamano` | Tamaño en bytes |
-| `ruta` | Dónde está en disco, relativa a la carpeta de subidas: `2026/09/<uuid>.pdf` |
+| `ruta` | Dónde está, relativa a la carpeta de subidas (o clave en el bucket S3): `2026/09/<uuid>.pdf` |
 | `subido_por_id`, `created_at` | Quién y cuándo |
 
 ### `historial` — auditoría de cada pedido
@@ -145,6 +153,44 @@ Cada cambio queda registrado con **quién** y **cuándo**. No se edita ni se bor
 | `adjunto` | Al subir archivos | Cuántos y de qué tipo |
 | `adjunto_borrado` | Al quitar un archivo | Nombre del archivo |
 | `cancelado` / `reactivado` | Al cancelar o reactivar | Motivo de la cancelación |
+
+### `pedido_items` — los productos de cada pedido
+
+| Columna | Qué guarda |
+|---|---|
+| `pedido_id` | A qué pedido pertenece (se borra con el pedido) |
+| `orden` | Posición en el pedido |
+| `producto`, `cantidad`, `link` | Lo mismo que antes era un solo producto por pedido |
+
+Los pedidos anteriores a esta tabla tienen un ítem cada uno, copiado de sus columnas `producto`, `cantidad` y `link`.
+
+### `notificaciones` — avisos de la campanita
+
+| Columna | Qué guarda |
+|---|---|
+| `usuario_id` | Para quién es |
+| `pedido_id` | Sobre qué pedido (al tocarla, se abre) |
+| `tipo` | `nuevo`, `estado_cotizando`, `estado_comprando`, `estado_entregado`, `fecha_estimada`, `trabado`, `atrasado`, `cancelado`, `ml_envio`, `ml_entregado` |
+| `titulo`, `cuerpo` | El texto del aviso (también se usa en el email y el push) |
+| `leida_en` | Cuándo la abrió; vacío = sin leer |
+
+Los avisos de pedidos trabados y entregas atrasadas los genera una revisión automática cada hora (lunes a viernes, de 8 a 19), una sola vez por etapa.
+
+### `suscripciones_push` — celulares con notificaciones activadas
+
+Un registro por navegador o celular que aceptó notificaciones push: `endpoint` (la dirección del servicio push del navegador), las claves `p256dh` y `auth` con que se cifran los mensajes, y el `usuario_id`. Se borra sola cuando el navegador da de baja la suscripción.
+
+### `intentos_login` — freno contra adivinar contraseñas
+
+Fallos de login por IP + email (`clave`), con cuántos (`fallos`) y desde cuándo (`desde`). Con 8 fallos en 15 minutos se bloquea esa combinación hasta que pase la ventana. Las filas de más de un día se borran solas.
+
+### `integraciones` — credenciales de servicios externos
+
+Hoy, solo la cuenta de Mercado Libre de Compras (`clave = mercadolibre`): el token de acceso, el de renovación y el usuario, en `datos` (JSON). Se borra con «Desconectar» en Administración → Integraciones.
+
+### Esquema `pgboss` — cola de tareas
+
+Lo crea y administra la librería pg-boss: emails y push pendientes, revisiones programadas y sus reintentos. No hay que tocarlo; si se borra, se vuelve a crear al arrancar.
 
 ### `opciones` — listas desplegables
 
@@ -163,9 +209,10 @@ Registro interno de las migraciones ya aplicadas (un hash por archivo de `drizzl
 
 ---
 
-## Archivos en disco
+## Archivos en disco (o en S3)
 
 - **Carpeta:** `UPLOAD_DIR`. En Docker es `/app/uploads`, sobre el volumen `uploads`.
+- **S3 (opcional):** con `S3_BUCKET` (y `S3_ENDPOINT` para R2 o B2) los archivos nuevos van al bucket, con la misma ruta como clave. Al leer, si no está en el bucket se busca en disco. Los existentes se copian con `node scripts/migrar-archivos-s3.mjs` (no borra nada del disco).
 - **Estructura:** `AAAA/MM/<uuid>.<ext>`. El nombre en disco es aleatorio: el nombre original solo está en la base.
 - **Qué se acepta:**
   - JPG, PNG, WEBP, GIF, PDF, XLSX, DOCX, XLS y DOC.
@@ -178,7 +225,7 @@ Registro interno de las migraciones ya aplicadas (un hash por archivo de `drizzl
 
 | Qué | Dónde | Para qué |
 |---|---|---|
-| `ps_sesion` | Cookie httpOnly (JavaScript no la puede leer), `SameSite=Lax`, `Secure` cuando se entra por HTTPS, 30 días | El token de la sesión |
+| `ps_sesion` | Cookie httpOnly (JavaScript no la puede leer), `SameSite=Lax`, `Secure` cuando se entra por HTTPS, 30 días que se renuevan al navegar (`src/proxy.ts`) | El token de la sesión |
 | `sidebar_state` | Cookie, 7 días | Si la barra lateral está abierta o cerrada |
 | `theme` | localStorage | Tema claro, oscuro o según el sistema |
 

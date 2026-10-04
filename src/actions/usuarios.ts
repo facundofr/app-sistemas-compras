@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { and, count, eq, ne } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/db";
-import { usuarios } from "@/db/schema";
+import { rolEnum, usuarios } from "@/db/schema";
 import { cerrarSesionesDeUsuario, requireRol, requireUsuario } from "@/lib/auth";
 import { hashPassword, verifyPassword } from "@/lib/password";
 import type { FormState } from "./pedidos";
@@ -17,7 +17,7 @@ const password = z
 const base = z.object({
   nombre: z.string().trim().min(2, "Ingresá el nombre.").max(120),
   email: z.string().trim().toLowerCase().email("Email inválido."),
-  rol: z.enum(["admin", "compras", "sistemas"], "Elegí un rol."),
+  rol: z.enum(rolEnum.enumValues, "Elegí un rol."),
 });
 
 function errores(error: z.ZodError): FormState {

@@ -6,6 +6,7 @@ import {
   historial,
   listaEnum,
   opciones,
+  pedidoItems,
   pedidos,
   usuarios,
   type Estado,
@@ -38,10 +39,15 @@ export async function getTodasLasOpciones() {
 const umbralDias = sql`(case ${pedidos.prioridad}
   when 'Urgente' then 1 when 'Alta' then 3 when 'Media' then 5 else 7 end)`;
 
-const necesitaAtencion = and(
+/** Sin avanzar de etapa más días de los que permite su prioridad (Urgente 1, Alta 3, Media 5, Baja 7). */
+export const estaTrabado = sql`${pedidos.estadoDesde} <= now() - ${umbralDias} * interval '1 day'`;
+/** Ya comprado y pasó la fecha estimada sin que se confirme la entrega. */
+export const entregaAtrasada = sql`(${pedidos.estado} = 'Comprando' and ${pedidos.fechaEstimada} < (now() at time zone ${TZ})::date)`;
+
+export const necesitaAtencion = and(
   eq(pedidos.cancelado, false),
   sql`${pedidos.estado} <> 'Entregado'`,
-  sql`${pedidos.estadoDesde} <= now() - ${umbralDias} * interval '1 day'`,
+  or(estaTrabado, entregaAtrasada),
 )!;
 
 /** Fecha que cuenta para el gasto: la de compra si está, si no la del pedido. */
@@ -110,6 +116,15 @@ function wherePedidos(f: FiltrosPedidos) {
         ilike(pedidos.solicitante, like),
         ilike(pedidos.solicitanteSector, like),
         ilike(pedidos.sector, like),
+        sql`exists (select 1 from pedido_items i where i.pedido_id = ${pedidos.id} and i.producto ilike ${like})`,
+        // Similitud de palabras (pg_trgm, con índice): «moniter» encuentra «Monitor».
+        ...(f.q.trim().length >= 4
+          ? [
+              sql`${f.q} <% ${pedidos.producto}`,
+              sql`${f.q} <% ${pedidos.proveedor}`,
+              sql`${f.q} <% ${pedidos.solicitante}`,
+            ]
+          : []),
         ...(esIdPedido(numero) ? [eq(pedidos.id, numero)] : []),
       )!,
     );
@@ -143,12 +158,20 @@ export async function listarPedidos(f: FiltrosPedidos, limite = 500) {
       cancelado: pedidos.cancelado,
       proveedor: pedidos.proveedor,
       importe: pedidos.importe,
+      fechaCompra: pedidos.fechaCompra,
+      fechaEstimada: pedidos.fechaEstimada,
+      fechaEntrega: pedidos.fechaEntrega,
       adjuntos: sql<number>`(select count(*)::int from adjuntos a where a.pedido_id = "pedidos"."id")`,
     })
     .from(pedidos)
     .where(wherePedidos(f))
     .orderBy(desc(pedidos.createdAt))
     .limit(limite);
+}
+
+export async function contarPedidos(f: FiltrosPedidos) {
+  const [r] = await db.select({ n: sql<number>`count(*)::int` }).from(pedidos).where(wherePedidos(f));
+  return r.n;
 }
 
 export async function pedidosParaExportar(f: FiltrosPedidos) {
@@ -169,7 +192,7 @@ export async function getPedido(id: number) {
     .limit(1);
   if (!row) return null;
 
-  const [archivos, eventos] = await Promise.all([
+  const [archivos, eventos, items] = await Promise.all([
     db
       .select({
         id: adjuntos.id,
@@ -197,9 +220,14 @@ export async function getPedido(id: number) {
       .leftJoin(usuarios, eq(usuarios.id, historial.usuarioId))
       .where(eq(historial.pedidoId, id))
       .orderBy(desc(historial.createdAt), desc(historial.id)),
+    db
+      .select({ producto: pedidoItems.producto, cantidad: pedidoItems.cantidad, link: pedidoItems.link })
+      .from(pedidoItems)
+      .where(eq(pedidoItems.pedidoId, id))
+      .orderBy(asc(pedidoItems.orden), asc(pedidoItems.id)),
   ]);
 
-  return { ...row.p, creadoPor: row.creadoPor, adjuntos: archivos, historial: eventos };
+  return { ...row.p, creadoPor: row.creadoPor, adjuntos: archivos, historial: eventos, items };
 }
 
 /* ---------------- Compras efectuadas ---------------- */
@@ -368,4 +396,127 @@ export async function getUltimoPedidoDe(usuarioId: number) {
     .orderBy(desc(pedidos.id))
     .limit(1);
   return row ?? null;
+}
+
+/* ---------------- Inicio (según el rol) ---------------- */
+
+const sinFactura = sql`(${pedidos.facturaNumero} is null and ${pedidos.facturaLink} is null
+  and not exists (select 1 from adjuntos a where a.pedido_id = "pedidos"."id" and a.tipo = 'factura'))`;
+const activo = and(eq(pedidos.cancelado, false), sql`${pedidos.estado} <> 'Entregado'`)!;
+
+const columnasTarjeta = {
+  id: pedidos.id,
+  producto: pedidos.producto,
+  cantidad: pedidos.cantidad,
+  solicitante: pedidos.solicitante,
+  sector: pedidos.sector,
+  prioridad: pedidos.prioridad,
+  estado: pedidos.estado,
+  estadoDesde: pedidos.estadoDesde,
+  cancelado: pedidos.cancelado,
+  proveedor: pedidos.proveedor,
+  fechaCompra: pedidos.fechaCompra,
+  fechaEstimada: pedidos.fechaEstimada,
+  fechaEntrega: pedidos.fechaEntrega,
+};
+export type PedidoTarjeta = Awaited<ReturnType<typeof tarjetas>>[number];
+
+/** Primero lo urgente y lo que llega antes. */
+const ordenTarjetas = [
+  sql`case ${pedidos.prioridad} when 'Urgente' then 0 when 'Alta' then 1 when 'Media' then 2 else 3 end`,
+  sql`${pedidos.fechaEstimada} asc nulls last`,
+  asc(pedidos.estadoDesde),
+];
+
+function tarjetas(where: SQL, limite = 6) {
+  return db
+    .select(columnasTarjeta)
+    .from(pedidos)
+    .where(where)
+    .orderBy(...ordenTarjetas)
+    .limit(limite);
+}
+
+async function seccion(where: SQL, limite = 6) {
+  const [items, [{ n }]] = await Promise.all([
+    tarjetas(where, limite),
+    db.select({ n: sql<number>`count(*)::int` }).from(pedidos).where(where),
+  ]);
+  return { items, total: n };
+}
+
+const semana = sql`${pedidos.fechaEstimada} <= (now() at time zone ${TZ})::date + 7`;
+
+/** Sistemas: lo propio que está en camino, lo que falta confirmar y lo último recibido (para volver a pedir). */
+export async function inicioSistemas(usuarioId: number) {
+  const propio = eq(pedidos.creadoPorId, usuarioId);
+  const [porConfirmar, enCurso, recibidos] = await Promise.all([
+    seccion(and(propio, eq(pedidos.cancelado, false), eq(pedidos.estado, "Comprando"))!),
+    seccion(and(propio, activo, sql`${pedidos.estado} <> 'Comprando'`)!),
+    db
+      .select(columnasTarjeta)
+      .from(pedidos)
+      .where(and(propio, eq(pedidos.estado, "Entregado"), eq(pedidos.cancelado, false)))
+      .orderBy(desc(pedidos.estadoDesde))
+      .limit(4),
+  ]);
+  return { porConfirmar, enCurso, recibidos };
+}
+
+/** Compras: una bandeja con lo que requiere acción. */
+export async function inicioCompras() {
+  const [atencion, porCotizar, porComprar, porLlegar, facturasFaltantes] = await Promise.all([
+    seccion(necesitaAtencion),
+    seccion(and(eq(pedidos.cancelado, false), eq(pedidos.estado, "Solicitado"))!),
+    seccion(and(eq(pedidos.cancelado, false), eq(pedidos.estado, "Cotizando"))!),
+    seccion(and(eq(pedidos.cancelado, false), eq(pedidos.estado, "Comprando"), semana)!),
+    seccion(and(eq(pedidos.cancelado, false), inArray(pedidos.estado, ["Comprando", "Entregado"]), sinFactura)!, 4),
+  ]);
+  return { atencion, porCotizar, porComprar, porLlegar, facturasFaltantes };
+}
+
+/** Recepción: todo lo comprado que todavía no llegó, primero lo que llega antes. */
+export async function inicioRecepcion() {
+  return seccion(and(eq(pedidos.cancelado, false), eq(pedidos.estado, "Comprando"))!, 30);
+}
+
+/** Cumplimiento por proveedor: calificación de la recepción, entregas a tiempo y demora desde la compra. */
+export async function getCumplimientoProveedores() {
+  return db
+    .select({
+      proveedor: pedidos.proveedor,
+      entregas: sql<number>`count(*)::int`,
+      calificacion: sql<number | null>`avg(${pedidos.calificacion})::float8`,
+      calificados: sql<number>`count(${pedidos.calificacion})::int`,
+      aTiempo: sql<number | null>`(avg(case when ${pedidos.fechaEntrega} <= ${pedidos.fechaEstimada} then 1.0 else 0 end)
+        filter (where ${pedidos.fechaEstimada} is not null and ${pedidos.fechaEntrega} is not null))::float8`,
+      dias: sql<number | null>`avg(${pedidos.fechaEntrega} - ${pedidos.fechaCompra})
+        filter (where ${pedidos.fechaCompra} is not null and ${pedidos.fechaEntrega} is not null)::float8`,
+    })
+    .from(pedidos)
+    .where(and(eq(pedidos.cancelado, false), eq(pedidos.estado, "Entregado"), isNotNull(pedidos.proveedor)))
+    .groupBy(pedidos.proveedor)
+    .orderBy(desc(sql`count(*)`))
+    .limit(15);
+}
+
+/** Ítems de varios pedidos (para la hoja «Productos» del Excel). */
+export async function itemsDePedidos(ids: number[]) {
+  if (!ids.length) return [];
+  return db
+    .select({ pedidoId: pedidoItems.pedidoId, producto: pedidoItems.producto, cantidad: pedidoItems.cantidad, link: pedidoItems.link })
+    .from(pedidoItems)
+    .where(inArray(pedidoItems.pedidoId, ids))
+    .orderBy(asc(pedidoItems.pedidoId), asc(pedidoItems.orden), asc(pedidoItems.id));
+}
+
+/** Productos ya pedidos, los más frecuentes primero: sugerencias mientras se escribe un pedido nuevo. */
+export async function productosFrecuentes(limite = 80) {
+  const filas = await db
+    .select({ producto: pedidoItems.producto })
+    .from(pedidoItems)
+    .groupBy(pedidoItems.producto)
+    .orderBy(desc(sql`count(*)`), asc(pedidoItems.producto))
+    .limit(limite);
+  return filas.map((f) => f.producto);
 }

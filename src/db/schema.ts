@@ -1,9 +1,10 @@
-import { relations } from "drizzle-orm";
+import { relations, sql } from "drizzle-orm";
 import {
   boolean,
   date,
   index,
   integer,
+  jsonb,
   numeric,
   pgEnum,
   pgTable,
@@ -14,7 +15,8 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 
-export const rolEnum = pgEnum("rol", ["admin", "compras", "sistemas"]);
+// «recepcion»: quien recibe los paquetes. Ve los pedidos y confirma entregas; no carga ni edita pedidos.
+export const rolEnum = pgEnum("rol", ["admin", "compras", "sistemas", "recepcion"]);
 
 export const estadoEnum = pgEnum("estado_pedido", [
   "Solicitado",
@@ -30,7 +32,8 @@ export const prioridadEnum = pgEnum("prioridad", [
   "Urgente",
 ]);
 
-export const tipoAdjuntoEnum = pgEnum("tipo_adjunto", ["referencia", "factura"]);
+// «recepcion»: foto del paquete al confirmar la entrega.
+export const tipoAdjuntoEnum = pgEnum("tipo_adjunto", ["referencia", "factura", "recepcion"]);
 
 export const listaEnum = pgEnum("lista_opciones", [
   "empresa",
@@ -108,6 +111,8 @@ export const pedidos = pgTable(
     cuit: text("cuit"),
     fechaCompra: date("fecha_compra"),
     fechaEntrega: date("fecha_entrega"),
+    // Cuándo debería llegar, según Compras: alimenta la frase de estado y la alerta de entrega atrasada.
+    fechaEstimada: date("fecha_estimada"),
     codigoSeguimiento: text("codigo_seguimiento"),
     medioPago: text("medio_pago"),
     cuotas: integer("cuotas"),
@@ -116,6 +121,14 @@ export const pedidos = pgTable(
     tipoFactura: text("tipo_factura"),
     facturaLink: text("factura_link"),
     notasCompras: text("notas_compras"),
+
+    // Compras hechas en Mercado Libre: número de orden y último estado del envío informado por su API.
+    mlOrden: text("ml_orden"),
+    mlEnvioEstado: text("ml_envio_estado"),
+
+    // Cómo llegó, según quien lo recibió (1 a 5). Alimenta el ranking de proveedores en Reportes.
+    calificacion: integer("calificacion"),
+    comentarioRecepcion: text("comentario_recepcion"),
 
     cancelado: boolean("cancelado").notNull().default(false),
     canceladoEn: timestamp("cancelado_en", { withTimezone: true }),
@@ -128,6 +141,10 @@ export const pedidos = pgTable(
     index("pedidos_created_idx").on(t.createdAt),
     index("pedidos_fecha_compra_idx").on(t.fechaCompra),
     index("pedidos_creado_por_idx").on(t.creadoPorId),
+    // Búsqueda por similitud (pg_trgm): rápida con miles de pedidos y tolerante a errores de tipeo.
+    index("pedidos_producto_trgm_idx").using("gin", sql`${t.producto} gin_trgm_ops`),
+    index("pedidos_proveedor_trgm_idx").using("gin", sql`${t.proveedor} gin_trgm_ops`),
+    index("pedidos_solicitante_trgm_idx").using("gin", sql`${t.solicitante} gin_trgm_ops`),
   ],
 );
 
@@ -180,12 +197,82 @@ export const opciones = pgTable(
   (t) => [uniqueIndex("opciones_lista_valor_idx").on(t.lista, t.valor)],
 );
 
+/**
+ * Productos del pedido. `pedidos.producto` guarda el resumen («Monitor 24'' y 2 productos más») y
+ * `pedidos.cantidad` el total de unidades, para que listados, búsqueda, etiqueta y Excel sigan iguales.
+ */
+export const pedidoItems = pgTable(
+  "pedido_items",
+  {
+    id: serial("id").primaryKey(),
+    pedidoId: integer("pedido_id")
+      .notNull()
+      .references(() => pedidos.id, { onDelete: "cascade" }),
+    orden: integer("orden").notNull().default(0),
+    producto: text("producto").notNull(),
+    cantidad: integer("cantidad").notNull(),
+    link: text("link"),
+  },
+  (t) => [index("pedido_items_pedido_idx").on(t.pedidoId, t.orden)],
+);
+
+/** Credenciales de integraciones externas (hoy: la cuenta de Mercado Libre de Compras). */
+export const integraciones = pgTable("integraciones", {
+  clave: text("clave").primaryKey(),
+  datos: jsonb("datos").notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow()
+    .$onUpdate(() => new Date()),
+});
+
+/** Avisos para cada usuario: se ven en la campanita y, si hay SMTP o push configurados, también llegan afuera. */
+export const notificaciones = pgTable(
+  "notificaciones",
+  {
+    id: serial("id").primaryKey(),
+    usuarioId: integer("usuario_id")
+      .notNull()
+      .references(() => usuarios.id, { onDelete: "cascade" }),
+    pedidoId: integer("pedido_id").references(() => pedidos.id, { onDelete: "cascade" }),
+    tipo: text("tipo").notNull(),
+    titulo: text("titulo").notNull(),
+    cuerpo: text("cuerpo"),
+    leidaEn: timestamp("leida_en", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("notificaciones_usuario_idx").on(t.usuarioId, t.createdAt)],
+);
+
+/** Celulares y navegadores que aceptaron notificaciones push (Web Push). */
+export const suscripcionesPush = pgTable(
+  "suscripciones_push",
+  {
+    endpoint: text("endpoint").primaryKey(),
+    usuarioId: integer("usuario_id")
+      .notNull()
+      .references(() => usuarios.id, { onDelete: "cascade" }),
+    p256dh: text("p256dh").notNull(),
+    auth: text("auth").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("suscripciones_push_usuario_idx").on(t.usuarioId)],
+);
+
+/** Intentos fallidos de login por IP + email. En la base para que sobrevivan a un reinicio. */
+export const intentosLogin = pgTable("intentos_login", {
+  clave: text("clave").primaryKey(),
+  fallos: integer("fallos").notNull().default(0),
+  desde: timestamp("desde", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const usuariosRelations = relations(usuarios, ({ many }) => ({
   pedidos: many(pedidos),
 }));
 
 export const pedidosRelations = relations(pedidos, ({ one, many }) => ({
   creadoPor: one(usuarios, { fields: [pedidos.creadoPorId], references: [usuarios.id] }),
+  items: many(pedidoItems),
   adjuntos: many(adjuntos),
   historial: many(historial),
 }));
@@ -203,7 +290,13 @@ export const historialRelations = relations(historial, ({ one }) => ({
 export type Usuario = typeof usuarios.$inferSelect;
 export type Pedido = typeof pedidos.$inferSelect;
 export type Adjunto = typeof adjuntos.$inferSelect;
+export type Notificacion = typeof notificaciones.$inferSelect;
+export type PedidoItem = typeof pedidoItems.$inferSelect;
 export type Rol = (typeof rolEnum.enumValues)[number];
 export type Estado = (typeof estadoEnum.enumValues)[number];
 export type Prioridad = (typeof prioridadEnum.enumValues)[number];
 export type Lista = (typeof listaEnum.enumValues)[number];
+
+export const pedidoItemsRelations = relations(pedidoItems, ({ one }) => ({
+  pedido: one(pedidos, { fields: [pedidoItems.pedidoId], references: [pedidos.id] }),
+}));

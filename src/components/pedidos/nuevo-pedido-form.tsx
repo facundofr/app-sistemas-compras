@@ -13,7 +13,15 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { codigoPedido } from "@/lib/format";
 import { CamposPedido, type OpcionesPedido, type ValoresPedido } from "./campos-pedido";
 
-export function NuevoPedidoForm({ valores, opciones }: { valores: ValoresPedido; opciones: OpcionesPedido }) {
+export function NuevoPedidoForm({
+  valores,
+  opciones,
+  sugerencias,
+}: {
+  valores: ValoresPedido;
+  opciones: OpcionesPedido;
+  sugerencias?: string[];
+}) {
   const [state, action, pending] = useActionState<FormState & { enviados?: number }, FormData>(
     async (prev, fd) => {
       const r = await crearPedido(prev, fd);
@@ -75,6 +83,7 @@ export function NuevoPedidoForm({ valores, opciones }: { valores: ValoresPedido;
               valores={valores}
               errores={state.ok ? {} : state.errores}
               opciones={opciones}
+              sugerencias={sugerencias}
               archivos={
                 <Campo
                   id="archivos"

@@ -3,15 +3,18 @@ import { createHash, randomBytes } from "node:crypto";
 import { cache } from "react";
 import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
-import { and, eq, gt, lt } from "drizzle-orm";
+import { and, eq, gt, lt, sql } from "drizzle-orm";
 import { db } from "@/db";
-import { sesiones, usuarios, type Rol } from "@/db/schema";
-import { BASE_PATH } from "./base-path";
-
-const COOKIE = "ps_sesion";
-const DURACION_MS = 30 * 24 * 60 * 60 * 1000;
-// La cookie solo viaja a esta app, no al resto de las páginas del dominio.
-const COOKIE_PATH = BASE_PATH || "/";
+import { intentosLogin, sesiones, usuarios, type Rol } from "@/db/schema";
+import {
+  COOKIE_PATH,
+  COOKIE_SESION as COOKIE,
+  DURACION_SESION_MS as DURACION_MS,
+  esCookieSegura,
+  HEADER_RUTA,
+  opcionesCookieSesion,
+  RENOVAR_SESION_MS,
+} from "./sesion-cookie";
 
 export type UsuarioSesion = {
   id: number;
@@ -25,11 +28,7 @@ function hashToken(token: string) {
 }
 
 async function cookieSegura() {
-  if (process.env.COOKIE_SECURE === "true") return true;
-  if (process.env.COOKIE_SECURE === "false") return false;
-  // Detrás de Caddy con HTTPS llega x-forwarded-proto=https; entrando directo por HTTP (IP:puerto) no.
-  const h = await headers();
-  return h.get("x-forwarded-proto") === "https";
+  return esCookieSegura((await headers()).get("x-forwarded-proto"));
 }
 
 export async function crearSesion(usuarioId: number) {
@@ -40,13 +39,7 @@ export async function crearSesion(usuarioId: number) {
   await db.delete(sesiones).where(lt(sesiones.expiraEn, new Date()));
 
   const store = await cookies();
-  store.set(COOKIE, token, {
-    httpOnly: true,
-    sameSite: "lax",
-    secure: await cookieSegura(),
-    path: COOKIE_PATH,
-    expires: expiraEn,
-  });
+  store.set(COOKIE, token, opcionesCookieSesion(await cookieSegura(), expiraEn));
 }
 
 export async function cerrarSesion() {
@@ -56,28 +49,44 @@ export async function cerrarSesion() {
   store.delete({ name: COOKIE, path: COOKIE_PATH });
 }
 
+/**
+ * La sesión se renueva con el uso: si le quedan menos de RENOVAR_SESION_MS, se extiende en la base.
+ * La cookie del navegador la extiende src/proxy.ts (los Server Components no pueden escribir cookies).
+ */
 export const getUsuarioActual = cache(async (): Promise<UsuarioSesion | null> => {
   const token = (await cookies()).get(COOKIE)?.value;
   if (!token) return null;
+  const id = hashToken(token);
   const [row] = await db
     .select({
       id: usuarios.id,
       nombre: usuarios.nombre,
       email: usuarios.email,
       rol: usuarios.rol,
+      expiraEn: sesiones.expiraEn,
     })
     .from(sesiones)
     .innerJoin(usuarios, eq(usuarios.id, sesiones.usuarioId))
-    .where(
-      and(eq(sesiones.id, hashToken(token)), gt(sesiones.expiraEn, new Date()), eq(usuarios.activo, true)),
-    )
+    .where(and(eq(sesiones.id, id), gt(sesiones.expiraEn, new Date()), eq(usuarios.activo, true)))
     .limit(1);
-  return row ?? null;
+  if (!row) return null;
+  const { expiraEn, ...usuario } = row;
+  if (expiraEn.getTime() - Date.now() < RENOVAR_SESION_MS) {
+    await db
+      .update(sesiones)
+      .set({ expiraEn: new Date(Date.now() + DURACION_MS) })
+      .where(eq(sesiones.id, id));
+  }
+  return usuario;
 });
 
+/** Sin sesión manda al login, que después vuelve a la página pedida (la ruta la agrega src/proxy.ts). */
 export async function requireUsuario() {
   const usuario = await getUsuarioActual();
-  if (!usuario) redirect("/login");
+  if (!usuario) {
+    const ruta = (await headers()).get(HEADER_RUTA);
+    redirect(ruta && ruta !== "/" ? `/login?next=${encodeURIComponent(ruta)}` : "/login");
+  }
   return usuario;
 }
 
@@ -91,9 +100,8 @@ export async function cerrarSesionesDeUsuario(usuarioId: number) {
   await db.delete(sesiones).where(eq(sesiones.usuarioId, usuarioId));
 }
 
-/* Límite simple de intentos de login por IP + email (en memoria, suficiente para una sola instancia). */
-const intentos = new Map<string, number[]>();
-const VENTANA_MS = 15 * 60 * 1000;
+/* Límite de intentos de login por IP + email: en la base, así no se reinicia al reiniciar la app. */
+const VENTANA = sql`interval '15 minutes'`;
 const MAX_INTENTOS = 8;
 
 export async function claveLimite(email: string) {
@@ -102,19 +110,31 @@ export async function claveLimite(email: string) {
   return `${ip}|${email}`;
 }
 
-export function limiteExcedido(clave: string) {
-  const ahora = Date.now();
-  const lista = (intentos.get(clave) ?? []).filter((t) => ahora - t < VENTANA_MS);
-  intentos.set(clave, lista);
-  return lista.length >= MAX_INTENTOS;
+export async function limiteExcedido(clave: string) {
+  const [r] = await db
+    .select({ fallos: intentosLogin.fallos })
+    .from(intentosLogin)
+    .where(and(eq(intentosLogin.clave, clave), gt(intentosLogin.desde, sql`now() - ${VENTANA}`)))
+    .limit(1);
+  return (r?.fallos ?? 0) >= MAX_INTENTOS;
 }
 
-export function registrarFallo(clave: string) {
-  const lista = intentos.get(clave) ?? [];
-  lista.push(Date.now());
-  intentos.set(clave, lista);
+/** Ventana fija de 15 minutos desde el primer fallo: pasada la ventana, el contador vuelve a 1. */
+export async function registrarFallo(clave: string) {
+  await db
+    .insert(intentosLogin)
+    .values({ clave, fallos: 1 })
+    .onConflictDoUpdate({
+      target: intentosLogin.clave,
+      set: {
+        fallos: sql`case when ${intentosLogin.desde} > now() - ${VENTANA} then ${intentosLogin.fallos} + 1 else 1 end`,
+        desde: sql`case when ${intentosLogin.desde} > now() - ${VENTANA} then ${intentosLogin.desde} else now() end`,
+      },
+    });
+  // Limpieza oportunista de ventanas vencidas.
+  await db.delete(intentosLogin).where(lt(intentosLogin.desde, sql`now() - interval '1 day'`));
 }
 
-export function limpiarFallos(clave: string) {
-  intentos.delete(clave);
+export async function limpiarFallos(clave: string) {
+  await db.delete(intentosLogin).where(eq(intentosLogin.clave, clave));
 }

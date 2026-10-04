@@ -1,13 +1,17 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ArrowLeftIcon, BanIcon, ExternalLinkIcon, InfoIcon, LockIcon } from "lucide-react";
+import { ArrowLeftIcon, BanIcon, ExternalLinkIcon, InfoIcon, LockIcon, RepeatIcon, StarIcon } from "lucide-react";
 import { AccionesPedido } from "@/components/pedidos/acciones";
 import { Adjuntos, SubirReferencias, type AdjuntoVista } from "@/components/pedidos/adjuntos";
 import { CompraForm } from "@/components/pedidos/compra-form";
 import { EditarPedidoForm } from "@/components/pedidos/editar-pedido-form";
 import { EstadoChip, PrioridadChip } from "@/components/pedidos/estado";
 import { EstadoRail } from "@/components/pedidos/estado-rail";
+import { EtiquetaQr } from "@/components/pedidos/etiqueta-qr";
+import { FraseEstado } from "@/components/pedidos/frase-estado";
+import { Seguimiento } from "@/components/pedidos/seguimiento";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { requireUsuario } from "@/lib/auth";
 import { esIdPedido, ESTADOS } from "@/lib/constants";
@@ -17,11 +21,13 @@ import {
   puedeAdjuntarReferencia,
   puedeBorrarAdjunto,
   puedeCambiarEstado,
+  puedeCargarPedidos,
   puedeCancelar,
   puedeEditarPedido,
   puedeEliminar,
   puedeReactivar,
 } from "@/lib/permisos";
+import { ESTADO_ENVIO_ML } from "@/lib/mercadolibre";
 import { getOpciones, getPedido } from "@/lib/queries";
 import { cn } from "@/lib/utils";
 
@@ -79,6 +85,7 @@ export default async function PedidoPage(props: PageProps<"/pedidos/[id]">) {
   });
   const referencias = p.adjuntos.filter((a) => a.tipo === "referencia").map(vista);
   const facturas = p.adjuntos.filter((a) => a.tipo === "factura").map(vista);
+  const fotosRecepcion = p.adjuntos.filter((a) => a.tipo === "recepcion").map(vista);
   const dias = diasDesde(p.estadoDesde);
 
   return (
@@ -105,15 +112,36 @@ export default async function PedidoPage(props: PageProps<"/pedidos/[id]">) {
             <EstadoChip estado={p.estado} cancelado={p.cancelado} />
             <PrioridadChip prioridad={p.prioridad} />
           </div>
+          <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[13px]">
+            <FraseEstado pedido={p} className="text-[13.5px]" />
+            {p.mlEnvioEstado && !p.cancelado && p.estado !== "Entregado" && (
+              <span className="rounded-full bg-gold-soft px-2.5 py-0.5 text-[12px] font-semibold text-gold-foreground">
+                Mercado Libre: {ESTADO_ENVIO_ML[p.mlEnvioEstado] ?? p.mlEnvioEstado}
+              </span>
+            )}
+            {p.codigoSeguimiento && !p.cancelado && p.estado !== "Entregado" && (
+              <Seguimiento codigo={p.codigoSeguimiento} medioCompra={p.medioCompra} />
+            )}
+          </div>
         </div>
-        <AccionesPedido
-          id={p.id}
-          estado={p.estado}
-          siguientePermitido={!!siguiente && puedeCambiarEstado(usuario, p, siguiente)}
-          puedeCancelar={puedeCancelar(usuario, p)}
-          puedeReactivar={puedeReactivar(usuario, p)}
-          puedeEliminar={puedeEliminar(usuario)}
-        />
+        <div className="flex flex-wrap items-center gap-2">
+          {puedeCargarPedidos(usuario.rol) && (p.estado === "Entregado" || p.cancelado) && (
+            // Como el «Volver a comprar» de Mercado Libre: abre el formulario con los mismos datos.
+            <Button variant="outline" asChild>
+              <Link href={`/pedidos/nuevo?desde=${p.id}`}>
+                <RepeatIcon /> Volver a pedir
+              </Link>
+            </Button>
+          )}
+          <AccionesPedido
+            id={p.id}
+            estado={p.estado}
+            siguientePermitido={!!siguiente && puedeCambiarEstado(usuario, p, siguiente)}
+            puedeCancelar={puedeCancelar(usuario, p)}
+            puedeReactivar={puedeReactivar(usuario, p)}
+            puedeEliminar={puedeEliminar(usuario)}
+          />
+        </div>
       </div>
 
       {p.cancelado ? (
@@ -169,9 +197,7 @@ export default async function PedidoPage(props: PageProps<"/pedidos/[id]">) {
                     facturarPor: p.facturarPor,
                     domicilioEntrega: p.domicilioEntrega,
                     prioridad: p.prioridad,
-                    producto: p.producto,
-                    cantidad: p.cantidad,
-                    link: p.link,
+                    items: p.items,
                     comentarios: p.comentarios,
                   }}
                 />
@@ -182,10 +208,21 @@ export default async function PedidoPage(props: PageProps<"/pedidos/[id]">) {
                   <Dato k="Sector que solicitó la compra">{p.sector}</Dato>
                   <Dato k="Nombre y apellido del solicitante">{p.solicitante}</Dato>
                   <Dato k="Facturar por">{p.facturarPor}</Dato>
-                  <Dato k="Cantidad">{p.cantidad}</Dato>
                   <Dato k="Domicilio de entrega">{p.domicilioEntrega}</Dato>
-                  <Dato k="Link" className="sm:col-span-2 lg:col-span-3">
-                    <Enlace href={p.link} />
+                  <Dato k={p.items.length > 1 ? `Productos (${p.cantidad} u. en total)` : "Producto"} className="sm:col-span-2 lg:col-span-3">
+                    <ul className="divide-y rounded-lg border">
+                      {p.items.map((it, i) => (
+                        <li key={i} className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 px-3 py-2">
+                          <span className="font-mono text-[12.5px] font-semibold tabular">{it.cantidad} u.</span>
+                          <span className="min-w-0 flex-1">{it.producto}</span>
+                          {it.link && (
+                            <span className="w-full text-[12.5px] font-normal">
+                              <Enlace href={it.link} />
+                            </span>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
                   </Dato>
                   <Dato k="Comentarios" className="sm:col-span-2 lg:col-span-3">
                     {p.comentarios && <span className="font-normal whitespace-pre-line">{p.comentarios}</span>}
@@ -211,8 +248,11 @@ export default async function PedidoPage(props: PageProps<"/pedidos/[id]">) {
                   <Dato k="Proveedor">{p.proveedor}</Dato>
                   <Dato k="Importe">{p.importe != null && <span className="font-mono">{fmtMoney(p.importe)}</span>}</Dato>
                   <Dato k="Fecha de compra">{p.fechaCompra && fmtDate(p.fechaCompra)}</Dato>
+                  <Dato k="Llega aprox. el">{p.fechaEstimada && fmtDate(p.fechaEstimada)}</Dato>
                   <Dato k="Fecha de entrega">{p.fechaEntrega && fmtDate(p.fechaEntrega)}</Dato>
-                  <Dato k="Seguimiento">{p.codigoSeguimiento}</Dato>
+                  <Dato k="Seguimiento">
+                    <Seguimiento codigo={p.codigoSeguimiento} medioCompra={p.medioCompra} />
+                  </Dato>
                   {compras && (
                     <>
                       <Dato k="CUIT">{p.cuit}</Dato>
@@ -230,6 +270,8 @@ export default async function PedidoPage(props: PageProps<"/pedidos/[id]">) {
         </div>
 
         <div className="min-w-0 space-y-5">
+          {!p.cancelado && p.estado === "Comprando" && <EtiquetaQr pedido={p} />}
+
           <Card>
             <CardHeader>
               <CardTitle className="text-[15.5px] font-bold">Presupuesto del sector</CardTitle>
@@ -240,6 +282,29 @@ export default async function PedidoPage(props: PageProps<"/pedidos/[id]">) {
               {puedeAdjuntarReferencia(usuario, p) && <SubirReferencias pedidoId={p.id} />}
             </CardContent>
           </Card>
+
+          {(p.calificacion || p.comentarioRecepcion || fotosRecepcion.length > 0) && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-[15.5px] font-bold">Recepción</CardTitle>
+                <CardDescription>Cómo llegó, según quien lo recibió.</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {p.calificacion && (
+                  <div className="flex items-center gap-0.5" aria-label={`${p.calificacion} de 5`}>
+                    {[1, 2, 3, 4, 5].map((n) => (
+                      <StarIcon
+                        key={n}
+                        className={cn("size-5", n <= p.calificacion! ? "fill-gold text-gold" : "text-muted-foreground/40")}
+                      />
+                    ))}
+                  </div>
+                )}
+                {p.comentarioRecepcion && <p className="text-[13px] whitespace-pre-line">{p.comentarioRecepcion}</p>}
+                {fotosRecepcion.length > 0 && <Adjuntos items={fotosRecepcion} vacio="" />}
+              </CardContent>
+            </Card>
+          )}
 
           <Card>
             <CardHeader>

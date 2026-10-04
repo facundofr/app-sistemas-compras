@@ -44,3 +44,7 @@ next-env.d.ts
 # archivos subidos y backups locales
 /uploads
 /backups
+
+# tests de punta a punta
+/test-results/
+/playwright-report/

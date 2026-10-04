@@ -2,7 +2,7 @@ import type { NextRequest } from "next/server";
 import ExcelJS from "exceljs";
 import { getUsuarioActual } from "@/lib/auth";
 import { codigoPedido, hoyISO } from "@/lib/format";
-import { listarCompras, pedidosParaExportar } from "@/lib/queries";
+import { itemsDePedidos, listarCompras, pedidosParaExportar } from "@/lib/queries";
 
 const MONEY = '"$"#,##0.00';
 const FECHA = "dd/mm/yyyy";
@@ -69,8 +69,10 @@ export async function GET(req: NextRequest) {
         { header: "Proveedor", key: "proveedor", width: 22 },
         { header: "CUIT", key: "cuit", width: 15 },
         { header: "Fecha compra", key: "fechaCompra", width: 13, style: { numFmt: FECHA } },
+        { header: "Llega aprox.", key: "fechaEstimada", width: 13, style: { numFmt: FECHA } },
         { header: "Fecha entrega", key: "fechaEntrega", width: 13, style: { numFmt: FECHA } },
         { header: "Seguimiento", key: "seguimiento", width: 18 },
+        { header: "Calificación recepción", key: "calificacion", width: 12 },
         { header: "Medio de pago", key: "medioPago", width: 14 },
         { header: "Cuotas", key: "cuotas", width: 8 },
         { header: "Importe", key: "importe", width: 15, style: { numFmt: MONEY } },
@@ -100,8 +102,10 @@ export async function GET(req: NextRequest) {
         proveedor: p.proveedor,
         cuit: p.cuit,
         fechaCompra: aFecha(p.fechaCompra),
+        fechaEstimada: aFecha(p.fechaEstimada),
         fechaEntrega: aFecha(p.fechaEntrega),
         seguimiento: p.codigoSeguimiento,
+        calificacion: p.calificacion,
         medioPago: p.medioPago,
         cuotas: p.cuotas,
         importe: p.importe,
@@ -112,6 +116,26 @@ export async function GET(req: NextRequest) {
         creadoPor,
         motivo: p.canceladoMotivo,
         cargado: p.createdAt,
+      })),
+    );
+    // Una fila por producto: los pedidos con varios ítems se ven completos.
+    const estadoDe = new Map(filas.map(({ p }) => [p.id, p.cancelado ? "Cancelado" : p.estado]));
+    hoja(
+      wb,
+      "Productos",
+      [
+        { header: "Código", key: "codigo", width: 12 },
+        { header: "Estado", key: "estado", width: 12 },
+        { header: "Producto", key: "producto", width: 44 },
+        { header: "Cantidad", key: "cantidad", width: 9 },
+        { header: "Link", key: "link", width: 40 },
+      ],
+      (await itemsDePedidos(filas.map((f) => f.p.id))).map((i) => ({
+        codigo: codigoPedido(i.pedidoId),
+        estado: estadoDe.get(i.pedidoId),
+        producto: i.producto,
+        cantidad: i.cantidad,
+        link: i.link,
       })),
     );
     const activos = filas.map((f) => f.p).filter((p) => !p.cancelado);

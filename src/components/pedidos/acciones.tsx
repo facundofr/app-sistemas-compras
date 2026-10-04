@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
+import Link from "next/link";
 import { ArrowRightIcon, BanIcon, Loader2Icon, PackageCheckIcon, RotateCcwIcon, Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
 import { cambiarEstado, cancelarPedido, eliminarPedido, reactivarPedido } from "@/actions/pedidos";
@@ -123,15 +124,17 @@ export function AccionesPedido({
         </AlertDialog>
       )}
 
-      {paso && siguientePermitido && (
+      {paso && siguientePermitido && paso.destino === "Entregado" && (
+        // La entrega se confirma en la misma pantalla que abre el QR: ahí se califica y se saca la foto.
+        <Button disabled={pending} asChild>
+          <Link href={`/pedidos/${id}/recibir`}>
+            <PackageCheckIcon /> {paso.texto}
+          </Link>
+        </Button>
+      )}
+      {paso && siguientePermitido && paso.destino !== "Entregado" && (
         <Button disabled={pending} onClick={() => correr(() => cambiarEstado(id, paso.destino))}>
-          {pending ? (
-            <Loader2Icon className="animate-spin" />
-          ) : paso.destino === "Entregado" ? (
-            <PackageCheckIcon />
-          ) : (
-            <ArrowRightIcon />
-          )}
+          {pending ? <Loader2Icon className="animate-spin" /> : <ArrowRightIcon />}
           {paso.texto}
         </Button>
       )}

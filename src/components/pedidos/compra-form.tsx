@@ -66,6 +66,14 @@ export function CompraForm({ pedido, opciones }: { pedido: Pedido; opciones: Opc
         <Campo id="fechaCompra" label="Fecha de compra" error={e.fechaCompra}>
           <Input id="fechaCompra" name="fechaCompra" type="date" defaultValue={pedido.fechaCompra ?? ""} />
         </Campo>
+        <Campo
+          id="fechaEstimada"
+          label="Llega aprox. el"
+          error={e.fechaEstimada}
+          ayuda="Se le avisa a quien lo pidió y, si pasa sin entregarse, el pedido pide atención."
+        >
+          <Input id="fechaEstimada" name="fechaEstimada" type="date" defaultValue={pedido.fechaEstimada ?? ""} />
+        </Campo>
         <Campo id="fechaEntrega" label="Fecha de entrega" error={e.fechaEntrega}>
           <Input id="fechaEntrega" name="fechaEntrega" type="date" defaultValue={pedido.fechaEntrega ?? ""} />
         </Campo>
@@ -76,6 +84,14 @@ export function CompraForm({ pedido, opciones }: { pedido: Pedido; opciones: Opc
             maxLength={200}
             defaultValue={pedido.codigoSeguimiento ?? ""}
           />
+        </Campo>
+        <Campo
+          id="mlOrden"
+          label="N° de orden de Mercado Libre"
+          error={e.mlOrden}
+          ayuda="Si se compró en Mercado Libre: con la cuenta conectada, la fecha estimada y el seguimiento se completan solos."
+        >
+          <Input id="mlOrden" name="mlOrden" inputMode="numeric" maxLength={30} defaultValue={pedido.mlOrden ?? ""} placeholder="Ej: 2000012345678901" />
         </Campo>
         <Campo id="medioPago" label="Tarjeta / medio de pago" error={e.medioPago}>
           <SelectSimple

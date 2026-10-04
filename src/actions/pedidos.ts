@@ -2,17 +2,20 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/db";
-import { adjuntos, historial, pedidos, type Estado, type Pedido } from "@/db/schema";
+import { adjuntos, historial, pedidoItems, pedidos, type Adjunto, type Estado, type Pedido } from "@/db/schema";
 import { requireUsuario, type UsuarioSesion } from "@/lib/auth";
 import { ARCHIVOS_MAX_POR_ENVIO, esIdPedido, ESTADOS, PRIORIDADES, SELECT_VACIO } from "@/lib/constants";
-import { codigoPedido, hoyISO } from "@/lib/format";
+import { codigoPedido, fmtDate, hoyISO } from "@/lib/format";
+import { filasDeItems, ITEMS_MAX, resumenItems, type ItemPedido } from "@/lib/items";
+import { idsDeCompras, notificar } from "@/lib/notificaciones";
 import {
   puedeAdjuntarReferencia,
   puedeBorrarAdjunto,
   puedeCambiarEstado,
+  puedeCargarPedidos,
   puedeCancelar,
   puedeEditarCompra,
   puedeEditarPedido,
@@ -20,6 +23,7 @@ import {
   puedeReactivar,
 } from "@/lib/permisos";
 import { ArchivoInvalido, archivosDelForm, borrarArchivo, guardarArchivo } from "@/lib/storage";
+import { avisarCambio } from "@/lib/tiempo-real";
 
 export type FormState = {
   ok?: boolean;
@@ -71,6 +75,10 @@ const datosPedidoSchema = z.object({
   facturarPor: requerido("Elegí la empresa que factura (o NA).", 120),
   domicilioEntrega: requerido("Elegí el domicilio o escribí otro.", 200),
   prioridad: z.enum(PRIORIDADES as [string, ...string[]], "Elegí una prioridad."),
+  comentarios: opcional(),
+});
+
+const itemSchema = z.object({
   producto: requerido("Describí el producto.", 500),
   cantidad: z.preprocess(
     (v) => (v === "" || v == null ? undefined : v),
@@ -81,8 +89,42 @@ const datosPedidoSchema = z.object({
       .max(100000, "Cantidad demasiado alta."),
   ),
   link: requerido("Pegá el link del producto.", 2000),
-  comentarios: opcional(),
 });
+
+/**
+ * Datos del pedido + sus ítems (columnas repetidas item_producto/item_cantidad/item_link).
+ * Los errores de un ítem vuelven como «items.<n>.<campo>» para marcar la fila exacta.
+ */
+function parsearPedido(formData: FormData) {
+  const datos = datosPedidoSchema.safeParse(datosDe(formData, Object.keys(datosPedidoSchema.shape)));
+  const filas = filasDeItems({
+    producto: formData.getAll("item_producto"),
+    cantidad: formData.getAll("item_cantidad"),
+    link: formData.getAll("item_link"),
+  });
+  const errores: Record<string, string> = datos.success ? {} : (erroresDe(datos.error).errores ?? {});
+  if (!filas.length) errores.items = "Agregá al menos un producto.";
+  if (filas.length > ITEMS_MAX) errores.items = `Hasta ${ITEMS_MAX} productos por pedido.`;
+  const items: ItemPedido[] = [];
+  filas.forEach((f, i) => {
+    const r = itemSchema.safeParse(f);
+    if (r.success) items.push(r.data);
+    else for (const issue of r.error.issues) errores[`items.${i}.${String(issue.path[0])}`] ??= issue.message;
+  });
+  if (!datos.success || Object.keys(errores).length) {
+    return { ok: false as const, estado: { error: "Revisá los campos marcados.", errores } satisfies FormState };
+  }
+  return {
+    ok: true as const,
+    items,
+    data: { ...datos.data, ...resumenItems(items), prioridad: datos.data.prioridad as Pedido["prioridad"] },
+  };
+}
+
+async function guardarItems(pedidoId: number, items: ItemPedido[]) {
+  await db.delete(pedidoItems).where(eq(pedidoItems.pedidoId, pedidoId));
+  await db.insert(pedidoItems).values(items.map((it, orden) => ({ ...it, pedidoId, orden })));
+}
 
 const compraSchema = z.object({
   medioCompra: opcional(120),
@@ -93,7 +135,9 @@ const compraSchema = z.object({
   ),
   fechaCompra: fecha,
   fechaEntrega: fecha,
+  fechaEstimada: fecha,
   codigoSeguimiento: opcional(200),
+  mlOrden: opcional(30).refine((v) => !v || /^[0-9]{6,20}$/.test(v), "El número de orden de Mercado Libre son solo dígitos."),
   medioPago: opcional(120),
   cuotas: z
     .preprocess((v) => (v === "" || v == null ? null : Number(v)), z.number().int("Número entero.").min(1, "Mínimo 1.").max(60, "Máximo 60.").nullable()),
@@ -139,7 +183,9 @@ const ETIQUETAS: Partial<Record<keyof Pedido, string>> = {
   cuit: "CUIT",
   fechaCompra: "Fecha de compra",
   fechaEntrega: "Fecha de entrega",
+  fechaEstimada: "Fecha estimada de entrega",
   codigoSeguimiento: "Seguimiento",
+  mlOrden: "Orden de Mercado Libre",
   medioPago: "Medio de pago",
   cuotas: "Cuotas",
   importe: "Importe",
@@ -169,7 +215,7 @@ async function guardarAdjuntos(
   formData: FormData,
   campo: string,
   pedidoId: number,
-  tipo: "referencia" | "factura",
+  tipo: Adjunto["tipo"],
   usuario: UsuarioSesion,
 ) {
   const files = archivosDelForm(formData, campo);
@@ -193,20 +239,29 @@ async function guardarAdjuntos(
 
 function refrescar() {
   revalidatePath("/", "layout");
+  // Los demás navegadores abiertos recargan solos (src/components/en-vivo.tsx).
+  void avisarCambio({ tipo: "pedidos" });
 }
 
 /* ---------------- acciones ---------------- */
 
 export async function crearPedido(_prev: FormState, formData: FormData): Promise<FormState> {
   const usuario = await requireUsuario();
-  const parsed = datosPedidoSchema.safeParse(datosDe(formData, Object.keys(datosPedidoSchema.shape)));
-  if (!parsed.success) return erroresDe(parsed.error);
+  if (!puedeCargarPedidos(usuario.rol)) return { error: "Tu rol no puede cargar pedidos." };
+  const parsed = parsearPedido(formData);
+  if (!parsed.ok) return parsed.estado;
 
   const [nuevo] = await db
     .insert(pedidos)
-    .values({ ...parsed.data, prioridad: parsed.data.prioridad as Pedido["prioridad"], creadoPorId: usuario.id })
+    .values({ ...parsed.data, creadoPorId: usuario.id })
     .returning({ id: pedidos.id });
-  await registrar(nuevo.id, usuario, "creado", "Pedido cargado");
+  await guardarItems(nuevo.id, parsed.items);
+  await registrar(
+    nuevo.id,
+    usuario,
+    "creado",
+    parsed.items.length > 1 ? `Pedido cargado con ${parsed.items.length} productos` : "Pedido cargado",
+  );
 
   let aviso: string | undefined;
   try {
@@ -217,6 +272,17 @@ export async function crearPedido(_prev: FormState, formData: FormData): Promise
     aviso = `El pedido se guardó, pero no se adjuntaron los archivos: ${err.message}`;
   }
 
+  const d = parsed.data;
+  await notificar(
+    await idsDeCompras(),
+    {
+      pedidoId: nuevo.id,
+      tipo: "nuevo",
+      titulo: `${d.prioridad === "Urgente" ? "Pedido URGENTE" : "Nuevo pedido"}: ${d.producto}`,
+      cuerpo: `${codigoPedido(nuevo.id)} · ${d.cantidad} u. · ${d.solicitante} (${d.sector}) · Prioridad ${d.prioridad}`,
+    },
+    usuario.id,
+  );
   refrescar();
   return {
     ok: true,
@@ -234,15 +300,21 @@ export async function actualizarPedido(_prev: FormState, formData: FormData): Pr
   if (!puedeEditarPedido(usuario, p)) {
     return { error: "Este pedido ya está en gestión de Compras y no se puede modificar." };
   }
-  const parsed = datosPedidoSchema.safeParse(datosDe(formData, Object.keys(datosPedidoSchema.shape)));
-  if (!parsed.success) return erroresDe(parsed.error);
+  const parsed = parsearPedido(formData);
+  if (!parsed.ok) return parsed.estado;
 
-  const cambios = camposCambiados(p, parsed.data);
+  const actuales = await db
+    .select({ producto: pedidoItems.producto, cantidad: pedidoItems.cantidad, link: pedidoItems.link })
+    .from(pedidoItems)
+    .where(eq(pedidoItems.pedidoId, id))
+    .orderBy(asc(pedidoItems.orden));
+  const itemsCambiaron = JSON.stringify(actuales) !== JSON.stringify(parsed.items);
+  // El resumen (producto/cantidad/link) se deriva de los ítems: si cambiaron, se informa como «Productos».
+  const { producto, cantidad, link, ...resto } = parsed.data;
+  const cambios = [...camposCambiados(p, resto), ...(itemsCambiaron ? ["Productos"] : [])];
   if (!cambios.length) return { ok: true, stamp: Date.now(), mensaje: "No había cambios para guardar." };
-  await db
-    .update(pedidos)
-    .set({ ...parsed.data, prioridad: parsed.data.prioridad as Pedido["prioridad"] })
-    .where(eq(pedidos.id, id));
+  await db.update(pedidos).set({ ...resto, producto, cantidad, link }).where(eq(pedidos.id, id));
+  if (itemsCambiaron) await guardarItems(id, parsed.items);
   await registrar(id, usuario, "edicion", `Cambió: ${cambios.join(", ")}`);
   refrescar();
   return { ok: true, stamp: Date.now(), mensaje: "Datos del pedido guardados." };
@@ -272,13 +344,48 @@ export async function actualizarCompra(_prev: FormState, formData: FormData): Pr
   if (!cambios.length) return { ok: !aviso, error: aviso, stamp: Date.now(), mensaje: "No había cambios para guardar." };
   await db.update(pedidos).set(parsed.data).where(eq(pedidos.id, id));
   await registrar(id, usuario, "compra", `Cambió: ${cambios.join(", ")}`);
+  if (p.creadoPorId && parsed.data.fechaEstimada && parsed.data.fechaEstimada !== p.fechaEstimada && p.estado !== "Entregado") {
+    await notificar(
+      [p.creadoPorId],
+      {
+        pedidoId: id,
+        tipo: "fecha_estimada",
+        titulo: `${p.producto}: llega aprox. el ${fmtDate(parsed.data.fechaEstimada)}`,
+        cuerpo: `Compras ${p.fechaEstimada ? "cambió" : "cargó"} la fecha estimada de entrega de ${codigoPedido(id)}.`,
+      },
+      usuario.id,
+    );
+  }
   refrescar();
   if (aviso) return { error: `Se guardaron los datos, pero no la factura: ${aviso}`, stamp: Date.now() };
   return { ok: true, stamp: Date.now(), mensaje: "Datos de compra guardados." };
 }
 
-export async function cambiarEstado(id: number, destino: Estado): Promise<FormState> {
-  const usuario = await requireUsuario();
+/** Qué se le avisa a quien cargó el pedido en cada cambio de etapa. */
+function avisoDeEtapa(p: Pedido, destino: Estado, quien: string) {
+  switch (destino) {
+    case "Cotizando":
+      return { titulo: `Compras empezó a cotizar: ${p.producto}`, cuerpo: `${codigoPedido(p.id)} está en «Cotizando».` };
+    case "Comprando":
+      return {
+        titulo: `Compras compró tu pedido: ${p.producto}`,
+        cuerpo: [
+          p.fechaEstimada ? `Llega aprox. el ${fmtDate(p.fechaEstimada)}.` : "Cuando llegue, confirmá la entrega.",
+          p.proveedor && `Proveedor: ${p.proveedor}.`,
+        ]
+          .filter(Boolean)
+          .join(" "),
+      };
+    case "Entregado":
+      return { titulo: `Se recibió: ${p.producto}`, cuerpo: `${quien} confirmó la entrega de ${codigoPedido(p.id)}.` };
+    default:
+      return { titulo: `${p.producto} volvió a «${destino}»`, cuerpo: `${quien} movió ${codigoPedido(p.id)} a «${destino}».` };
+  }
+}
+
+type DatosRecepcion = { calificacion?: number | null; comentarioRecepcion?: string | null };
+
+async function moverEstado(usuario: UsuarioSesion, id: number, destino: Estado, recepcion?: DatosRecepcion) {
   if (!ESTADOS.includes(destino)) return { error: "Estado inválido." };
   const p = await cargarPedido(id);
   if (!p) return { error: "El pedido no existe." };
@@ -299,6 +406,7 @@ export async function cambiarEstado(id: number, destino: Estado): Promise<FormSt
       estadoDesde: new Date(),
       ...(destino === "Comprando" && !p.fechaCompra ? { fechaCompra: hoy } : {}),
       ...(destino === "Entregado" && !p.fechaEntrega ? { fechaEntrega: hoy } : {}),
+      ...(destino === "Entregado" ? recepcion : {}),
     })
     .where(and(eq(pedidos.id, id), eq(pedidos.estado, p.estado), eq(pedidos.cancelado, false)))
     .returning({ id: pedidos.id });
@@ -307,8 +415,53 @@ export async function cambiarEstado(id: number, destino: Estado): Promise<FormSt
     return { error: "Otra persona acaba de modificar este pedido. Revisá su estado actual." };
   }
   await registrar(id, usuario, "estado", `${p.estado} → ${destino}`);
+
+  const aviso = { pedidoId: id, tipo: `estado_${destino.toLowerCase()}`, ...avisoDeEtapa(p, destino, usuario.nombre) };
+  // La entrega también le importa a Compras (cierra el circuito); el resto, solo a quien lo pidió.
+  const destinatarios = [...(p.creadoPorId ? [p.creadoPorId] : []), ...(destino === "Entregado" ? await idsDeCompras() : [])];
+  await notificar(destinatarios, aviso, usuario.id);
+  return { ok: true, pedido: p };
+}
+
+export async function cambiarEstado(id: number, destino: Estado): Promise<FormState> {
+  const usuario = await requireUsuario();
+  const r = await moverEstado(usuario, id, destino);
   refrescar();
+  if (r.error) return { error: r.error };
   return { ok: true, mensaje: `${codigoPedido(id)} pasó a «${destino}».` };
+}
+
+const recepcionSchema = z.object({
+  calificacion: z.preprocess(
+    (v) => (v === "" || v == null ? null : Number(v)),
+    z.number().int().min(1).max(5).nullable(),
+  ),
+  comentarioRecepcion: opcional(500),
+});
+
+/** Confirmación desde la pantalla del QR: además de la entrega, guarda cómo llegó y una foto opcional. */
+export async function confirmarEntrega(_prev: FormState, formData: FormData): Promise<FormState> {
+  const usuario = await requireUsuario();
+  const id = Number(formData.get("id"));
+  const parsed = recepcionSchema.safeParse(datosDe(formData, ["calificacion", "comentarioRecepcion"]));
+  if (!parsed.success) return erroresDe(parsed.error);
+
+  const r = await moverEstado(usuario, id, "Entregado", parsed.data);
+  if (r.error) {
+    refrescar();
+    return { error: r.error };
+  }
+  let aviso: string | undefined;
+  try {
+    const g = await guardarAdjuntos(formData, "fotos", id, "recepcion", usuario);
+    if (g.length) await registrar(id, usuario, "adjunto", `${g.length} foto(s) de la recepción`);
+  } catch (err) {
+    if (!(err instanceof ArchivoInvalido)) throw err;
+    aviso = `La entrega quedó confirmada, pero no se guardó la foto: ${err.message}`;
+  }
+  refrescar();
+  if (aviso) return { error: aviso, stamp: Date.now() };
+  return { ok: true, stamp: Date.now(), mensaje: `${codigoPedido(id)} entregado. ¡Gracias!` };
 }
 
 export async function cancelarPedido(id: number, motivo: string): Promise<FormState> {
@@ -324,6 +477,16 @@ export async function cancelarPedido(id: number, motivo: string): Promise<FormSt
     .returning({ id: pedidos.id });
   if (!cancelados.length) return { ok: true, mensaje: `${codigoPedido(id)} ya estaba cancelado.` };
   await registrar(id, usuario, "cancelado", m ?? undefined);
+  await notificar(
+    [...(p.creadoPorId ? [p.creadoPorId] : []), ...(await idsDeCompras())],
+    {
+      pedidoId: id,
+      tipo: "cancelado",
+      titulo: `Pedido cancelado: ${p.producto}`,
+      cuerpo: `${usuario.nombre} canceló ${codigoPedido(id)}${m ? `. Motivo: ${m}` : "."}`,
+    },
+    usuario.id,
+  );
   refrescar();
   return { ok: true, mensaje: `${codigoPedido(id)} cancelado.` };
 }

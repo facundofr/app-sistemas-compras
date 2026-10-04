@@ -51,5 +51,6 @@ export function Stat({
 }
 
 export function Stats({ children }: { children: React.ReactNode }) {
-  return <div className="flex flex-wrap gap-2.5">{children}</div>;
+  // En el celular, grilla pareja de 2 columnas en vez de tarjetas de distinto ancho.
+  return <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap sm:gap-2.5">{children}</div>;
 }

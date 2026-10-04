@@ -3,20 +3,24 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
+  BellIcon,
   ChartColumnIcon,
   ChevronsUpDownIcon,
   ClipboardListIcon,
+  HouseIcon,
   KeyRoundIcon,
   ListChecksIcon,
   LogOutIcon,
+  PlugIcon,
   PlusIcon,
+  QrCodeIcon,
   ReceiptTextIcon,
   UsersIcon,
 } from "lucide-react";
 import { logout } from "@/actions/auth";
 import type { UsuarioSesion } from "@/lib/auth";
 import { ROLES } from "@/lib/constants";
-import { gestionaCompras } from "@/lib/permisos";
+import { gestionaCompras, puedeCargarPedidos } from "@/lib/permisos";
 import { Brand } from "@/components/brand";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import {
@@ -52,7 +56,7 @@ function iniciales(nombre: string) {
     .join("");
 }
 
-export function AppSidebar({ usuario, alertas }: { usuario: UsuarioSesion; alertas: number }) {
+export function AppSidebar({ usuario, alertas, noLeidas }: { usuario: UsuarioSesion; alertas: number; noLeidas: number }) {
   const pathname = usePathname();
   const { setOpenMobile } = useSidebar();
   const compras = gestionaCompras(usuario.rol);
@@ -61,7 +65,8 @@ export function AppSidebar({ usuario, alertas }: { usuario: UsuarioSesion; alert
     {
       label: "Pedidos",
       items: [
-        { href: "/pedidos/nuevo", label: "Nuevo pedido", icon: PlusIcon },
+        { href: "/inicio", label: "Inicio", icon: HouseIcon },
+        ...(puedeCargarPedidos(usuario.rol) ? [{ href: "/pedidos/nuevo", label: "Nuevo pedido", icon: PlusIcon }] : []),
         {
           href: "/pedidos",
           label: compras ? "Pedidos" : "Estado de pedidos",
@@ -70,6 +75,8 @@ export function AppSidebar({ usuario, alertas }: { usuario: UsuarioSesion; alert
           exact: true,
         },
         { href: "/compras", label: "Compras efectuadas", icon: ReceiptTextIcon },
+        { href: "/escanear", label: "Escanear QR", icon: QrCodeIcon },
+        { href: "/notificaciones", label: "Notificaciones", icon: BellIcon, badge: noLeidas },
         ...(compras ? [{ href: "/reportes", label: "Reportes", icon: ChartColumnIcon }] : []),
       ],
     },
@@ -80,6 +87,7 @@ export function AppSidebar({ usuario, alertas }: { usuario: UsuarioSesion; alert
             items: [
               { href: "/admin/usuarios", label: "Usuarios", icon: UsersIcon },
               { href: "/admin/listas", label: "Listas de opciones", icon: ListChecksIcon },
+              { href: "/admin/integraciones", label: "Integraciones", icon: PlugIcon },
             ],
           },
         ]

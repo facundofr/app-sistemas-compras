@@ -18,6 +18,7 @@ export const ROLES: Record<Rol, { nombre: string; descripcion: string }> = {
   admin: { nombre: "Administrador", descripcion: "Acceso total, gestiona usuarios y listas" },
   compras: { nombre: "Compras", descripcion: "Gestiona cotizaciones, compras y facturas" },
   sistemas: { nombre: "Equipo Sistemas", descripcion: "Carga pedidos y confirma entregas" },
+  recepcion: { nombre: "Recepción", descripcion: "Recibe los paquetes: ve los pedidos y confirma entregas, no carga pedidos" },
 };
 
 /** El orden de las claves es el orden en que se muestran en «Listas de opciones». */

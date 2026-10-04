@@ -178,3 +178,25 @@
 @utility tabular {
   font-variant-numeric: tabular-nums;
 }
+
+/* «Imprimir etiqueta»: solo sale la etiqueta del QR, a tamaño sticker, arriba a la izquierda de la hoja. */
+@media print {
+  html.imprimiendo-etiqueta body * {
+    visibility: hidden;
+  }
+  html.imprimiendo-etiqueta .etiqueta-qr,
+  html.imprimiendo-etiqueta .etiqueta-qr * {
+    visibility: visible;
+  }
+  html.imprimiendo-etiqueta .etiqueta-qr {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 9cm;
+    max-width: none;
+    margin: 0;
+    border: 1px dashed #999;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+}

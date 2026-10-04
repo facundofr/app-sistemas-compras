@@ -2,7 +2,31 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { ARCHIVO_MAX_MB, MIME_PERMITIDOS } from "./constants";
+
+/**
+ * Dónde se guardan los archivos: en disco (volumen de Docker) o, si está S3_BUCKET, en un almacenamiento
+ * compatible con S3 (Cloudflare R2, Backblaze B2, AWS...), fuera del servidor y con su propio respaldo.
+ * La ruta guardada en la base es la misma en los dos casos; al leer, si no está en S3 se busca en disco
+ * (así los archivos viejos siguen andando mientras se migran con scripts/migrar-archivos-s3.mjs).
+ */
+export const s3Configurado = () => !!process.env.S3_BUCKET;
+
+let s3: S3Client | null = null;
+function getS3() {
+  s3 ??= new S3Client({
+    region: process.env.S3_REGION || "auto",
+    endpoint: process.env.S3_ENDPOINT || undefined,
+    forcePathStyle: !!process.env.S3_ENDPOINT,
+    credentials:
+      process.env.S3_ACCESS_KEY_ID && process.env.S3_SECRET_ACCESS_KEY
+        ? { accessKeyId: process.env.S3_ACCESS_KEY_ID, secretAccessKey: process.env.S3_SECRET_ACCESS_KEY }
+        : undefined,
+  });
+  return s3;
+}
+const Bucket = () => process.env.S3_BUCKET!;
 
 // turbopackIgnore: la ruta se resuelve en tiempo de ejecución; sin esto el build copia todo el proyecto al standalone.
 const UPLOAD_DIR = path.resolve(
@@ -58,16 +82,30 @@ export async function guardarArchivo(file: File) {
   const ahora = new Date();
   const carpeta = `${ahora.getFullYear()}/${String(ahora.getMonth() + 1).padStart(2, "0")}`;
   const ruta = `${carpeta}/${randomUUID()}${MIME_PERMITIDOS[mime]}`;
-  await mkdir(path.join(UPLOAD_DIR, carpeta), { recursive: true });
-  await writeFile(rutaAbsoluta(ruta), buf);
+  if (s3Configurado()) {
+    await getS3().send(new PutObjectCommand({ Bucket: Bucket(), Key: ruta, Body: buf, ContentType: mime }));
+  } else {
+    await mkdir(path.join(UPLOAD_DIR, carpeta), { recursive: true });
+    await writeFile(rutaAbsoluta(ruta), buf);
+  }
   const nombre = file.name.replace(/[\\/\r\n"]/g, "_").slice(0, 200) || `archivo${MIME_PERMITIDOS[mime]}`;
   return { ruta, mime, tamano: buf.length, nombre };
 }
 
-export async function leerArchivo(ruta: string) {
+export async function leerArchivo(ruta: string): Promise<Buffer> {
+  if (s3Configurado()) {
+    try {
+      const r = await getS3().send(new GetObjectCommand({ Bucket: Bucket(), Key: ruta }));
+      return Buffer.from(await r.Body!.transformToByteArray());
+    } catch (err) {
+      if ((err as { name?: string }).name !== "NoSuchKey") throw err;
+      // No está en S3: puede ser un archivo de antes de migrar.
+    }
+  }
   return readFile(rutaAbsoluta(ruta));
 }
 
 export async function borrarArchivo(ruta: string) {
+  if (s3Configurado()) await getS3().send(new DeleteObjectCommand({ Bucket: Bucket(), Key: ruta }));
   await rm(rutaAbsoluta(ruta), { force: true });
 }

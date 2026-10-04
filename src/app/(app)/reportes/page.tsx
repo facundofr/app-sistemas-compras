@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { DownloadIcon } from "lucide-react";
+import { DownloadIcon, StarIcon } from "lucide-react";
 import { PageHeader, Stat, Stats } from "@/components/page-header";
 import { GastoMensual } from "@/components/reportes/gasto-mensual";
 import { Ranking } from "@/components/reportes/ranking";
@@ -8,7 +8,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { requireRol } from "@/lib/auth";
 import { conBase } from "@/lib/base-path";
 import { fmtMes, fmtMoney, hoyISO } from "@/lib/format";
-import { getReportes } from "@/lib/queries";
+import { getCumplimientoProveedores, getReportes } from "@/lib/queries";
 
 export const metadata: Metadata = { title: "Reportes" };
 
@@ -25,7 +25,7 @@ function ultimos12(porMes: { mes: string; total: number }[]) {
 
 export default async function ReportesPage() {
   await requireRol("admin", "compras");
-  const r = await getReportes();
+  const [r, cumplimiento] = await Promise.all([getReportes(), getCumplimientoProveedores()]);
   const meses = ultimos12(r.porMes);
   const promedio = r.resumen.compras ? r.resumen.total / r.resumen.compras : 0;
   const dias = r.resumen.diasPromedio;
@@ -101,6 +101,62 @@ export default async function ReportesPage() {
           </CardHeader>
           <CardContent>
             <Ranking filas={r.porMedioPago} vacio="Todavía no hay importes cargados." />
+          </CardContent>
+        </Card>
+        <Card className="lg:col-span-2">
+          <CardHeader>
+            <CardTitle className="text-[15.5px] font-bold">Cumplimiento de proveedores</CardTitle>
+            <CardDescription>
+              Según quien recibió cada paquete: calificación, entregas en la fecha estimada y días desde la compra.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {cumplimiento.length === 0 ? (
+              <p className="py-6 text-center text-[13px] text-muted-foreground">Todavía no hay entregas con proveedor cargado.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-[13px]">
+                  <thead>
+                    <tr className="border-b text-left text-[11px] tracking-wide text-muted-foreground uppercase">
+                      <th className="py-2 pr-3 font-medium">Proveedor</th>
+                      <th className="px-3 py-2 text-right font-medium">Entregas</th>
+                      <th className="px-3 py-2 font-medium">Calificación</th>
+                      <th className="px-3 py-2 text-right font-medium">A tiempo</th>
+                      <th className="py-2 pl-3 text-right font-medium">Demora</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {cumplimiento.map((c) => (
+                      <tr key={c.proveedor} className="border-b last:border-0">
+                        <td className="py-2 pr-3 font-medium">{c.proveedor}</td>
+                        <td className="px-3 py-2 text-right tabular">{c.entregas}</td>
+                        <td className="px-3 py-2">
+                          {c.calificacion == null ? (
+                            <span className="text-muted-foreground">—</span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 whitespace-nowrap">
+                              <StarIcon className="size-3.5 fill-gold text-gold" />
+                              {c.calificacion.toLocaleString("es-AR", { maximumFractionDigits: 1 })}
+                              <span className="text-[11.5px] text-muted-foreground">({c.calificados})</span>
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 text-right tabular">
+                          {c.aTiempo == null ? <span className="text-muted-foreground">—</span> : `${Math.round(c.aTiempo * 100)}%`}
+                        </td>
+                        <td className="py-2 pl-3 text-right tabular whitespace-nowrap">
+                          {c.dias == null ? (
+                            <span className="text-muted-foreground">—</span>
+                          ) : (
+                            `${c.dias.toLocaleString("es-AR", { maximumFractionDigits: 1 })} d`
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>
