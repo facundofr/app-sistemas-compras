@@ -10,6 +10,7 @@ Aplicación web para el circuito de compras del equipo de Sistemas: **Sistemas c
 ## Documentación
 
 - [docs/datos.md](docs/datos.md): cómo y dónde se guardan los datos, qué se guarda en cada tabla, qué no se guarda, y backups.
+- [docs/resumen-dev.md](docs/resumen-dev.md): resumen de la rama `dev`: credenciales de prueba, flujo de cada usuario, qué hace y qué no.
 - [docs/deploy-con-ia.md](docs/deploy-con-ia.md): el deploy en un VPS paso a paso, escrito para que lo ejecute un agente de IA (o una persona).
 
 ## Qué hace
@@ -20,7 +21,8 @@ Aplicación web para el circuito de compras del equipo de Sistemas: **Sistemas c
 | **Nuevo pedido** | Sistemas, Compras y Admin | Los campos del formulario de Google: fecha de pedido, solicitante del sector, sector que solicitó la compra, nombre y apellido del solicitante, facturar por (o NA), domicilio de entrega (Cramer 1652, Av Los Incas 3536 u otro), prioridad, uno o más productos (cada uno con cantidad y link, como un carrito), presupuesto pedido por el sector (hasta 5 archivos: imágenes, PDF, Excel o Word) y comentarios. Precarga los datos del último pedido del usuario. Con «Volver a pedir» (en un pedido entregado o cancelado) se abre con todos los productos de ese pedido. |
 | **Pedidos / Estado de pedidos** | Todos | Alertas de pedidos trabados según prioridad (Urgente 1 día, Alta 3, Media 5, Baja 7), conteo por etapa, búsqueda tolerante a errores de tipeo, filtros como chips (en el celular, en un panel desde abajo), frase de estado de cada pedido, «Ver más» de a 50 y exportación a Excel (con una hoja por producto). Se actualiza sola cuando alguien cambia algo. |
 | **Detalle del pedido** | Todos | Riel de etapas (Solicitado → Cotizando → Comprando → Entregado), datos del pedido, datos de compra (proveedor, CUIT, fechas, seguimiento, medio de pago, cuotas, importe, factura), imágenes, factura adjunta, historial completo, y acciones para cancelar, reactivar o eliminar. |
-| **Etiqueta QR y confirmar entrega** | Todos (la etiqueta se imprime desde el detalle) | Cuando el pedido pasa a «Comprando», el detalle muestra una etiqueta con QR para imprimir y pegar en el paquete. Al escanearla (con la cámara del celular o con el botón **QR** del menú inferior) se abre `/pedidos/[id]/recibir`, que muestra el pedido y un botón para confirmar la entrega, con calificación opcional (1 a 5 estrellas), comentario y foto del paquete. Abrir el link no cambia nada: hay que tocar el botón. El lector tiene un modo «Recibir varios seguidos» para cuando llegan muchos paquetes juntos. |
+| **Etiqueta QR y confirmar entrega** | Todos (la etiqueta se imprime desde el detalle) | Cuando el pedido pasa a «Comprando», el detalle muestra una etiqueta con QR para imprimir y pegar en el paquete. Al escanearla (con la cámara del celular o con el botón **QR** del menú inferior) se abre `/pedidos/[id]/recibir`, que muestra el pedido y un botón para confirmar la entrega, con calificación opcional (1 a 5 estrellas), comentario y foto del paquete. Abrir el link no cambia nada: hay que tocar el botón. El lector tiene un modo «Recibir varios seguidos» para cuando llegan muchos paquetes juntos. Si el pedido tiene varios productos o unidades se marca qué llegó: queda «Llegó una parte» hasta que se reciba el resto. |
+| **Inventario** | Todos (lo gestionan Sistemas y Admin) | Los equipos de Sistemas: número de serie, a quién se le dio, sector, ubicación, estado (en uso, depósito, reparación, baja) y garantía. Se cargan desde un pedido recibido (una fila por unidad, precargada) o a mano. Cada equipo tiene su etiqueta QR `EQ-00001`, que el botón QR abre directo en su ficha, y un historial de asignaciones. Exporta a Excel. |
 | **Notificaciones** | Todos | La campanita del encabezado: nuevo pedido, cambio de etapa, fecha estimada, entrega, cancelación, pedidos trabados y entregas atrasadas (revisión automática cada hora). Si están configurados, también llegan por email y como push al celular. |
 | **Compras efectuadas** | Todos | Todo lo comprado, con totales, ticket promedio y compras sin factura. Filtros por fechas, empresa, medio de pago y texto. Exporta a Excel. |
 | **Reportes** | Compras y Admin | Gasto por mes, por empresa, por proveedor y por medio de pago, días promedio del pedido a la entrega y cumplimiento de cada proveedor (calificación, entregas a tiempo y demora). |
@@ -31,7 +33,7 @@ Aplicación web para el circuito de compras del equipo de Sistemas: **Sistemas c
 
 ### Roles
 
-- **Equipo Sistemas:** carga pedidos, puede editar los suyos mientras sigan en «Solicitado», cancelarlos y confirmar la entrega cuando Compras ya compró.
+- **Equipo Sistemas:** carga pedidos, puede editar los suyos mientras sigan en «Solicitado», cancelarlos, confirmar la entrega cuando Compras ya compró y lleva el inventario de equipos.
 - **Compras:** gestiona todos los pedidos: mueve las etapas, carga los datos de compra y la factura, y ve los reportes.
 - **Recepción:** quien recibe los paquetes. Ve los pedidos, escanea las etiquetas y confirma entregas; no carga ni edita pedidos.
 - **Administrador:** todo lo anterior, más usuarios, listas de opciones, integraciones y eliminar pedidos.
@@ -184,7 +186,7 @@ Otros comandos:
 ## Tests
 
 ```bash
-npm test            # unitarios (Vitest): permisos, lectura del QR, frase de estado, ítems, seguimiento, formatos
+npm test            # unitarios (Vitest): permisos, lectura del QR, frase de estado, ítems, recepción parcial, equipos, seguimiento, formatos
 npm run test:e2e    # de punta a punta (Playwright): crea la base pedidos_e2e y usa la app con un navegador
 ```
 
@@ -202,6 +204,7 @@ src/
       pedidos/             Listado, nuevo pedido, detalle [id] y confirmar entrega [id]/recibir
       escanear/            Lector de QR con la cámara (botón central del menú del celular)
       inicio/              Inicio según el rol
+      equipos/             Inventario: lista, alta (también desde un pedido) y ficha [id] con su etiqueta QR
       notificaciones/      La campanita: lista de avisos y activar push
       compras/             Compras efectuadas
       reportes/            Gráficos de gasto

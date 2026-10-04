@@ -212,8 +212,58 @@ export const pedidoItems = pgTable(
     producto: text("producto").notNull(),
     cantidad: integer("cantidad").notNull(),
     link: text("link"),
+    // Recepción parcial: cuántas unidades ya llegaron. El pedido pasa a «Entregado» cuando llegaron todas.
+    cantidadRecibida: integer("cantidad_recibida").notNull().default(0),
   },
   (t) => [index("pedido_items_pedido_idx").on(t.pedidoId, t.orden)],
+);
+
+export const estadoEquipoEnum = pgEnum("estado_equipo", ["en_uso", "en_deposito", "en_reparacion", "baja"]);
+
+/**
+ * Inventario de equipos de Sistemas. Se cargan al recibir un pedido (con su número de serie y a quién se le dio)
+ * o a mano, para lo que ya estaba. Cada uno tiene su etiqueta QR (EQ-00001).
+ */
+export const equipos = pgTable(
+  "equipos",
+  {
+    id: serial("id").primaryKey(),
+    pedidoId: integer("pedido_id").references(() => pedidos.id, { onDelete: "set null" }),
+    pedidoItemId: integer("pedido_item_id").references(() => pedidoItems.id, { onDelete: "set null" }),
+    descripcion: text("descripcion").notNull(),
+    numeroSerie: text("numero_serie"),
+    estado: estadoEquipoEnum("estado").notNull().default("en_uso"),
+    asignadoA: text("asignado_a"),
+    sector: text("sector"),
+    ubicacion: text("ubicacion"),
+    fechaAlta: date("fecha_alta").notNull().defaultNow(),
+    garantiaHasta: date("garantia_hasta"),
+    notas: text("notas"),
+    creadoPorId: integer("creado_por_id").references(() => usuarios.id, { onDelete: "set null" }),
+    ...timestamps,
+  },
+  (t) => [
+    uniqueIndex("equipos_serie_idx").on(t.numeroSerie),
+    index("equipos_pedido_idx").on(t.pedidoId),
+    index("equipos_estado_idx").on(t.estado),
+    index("equipos_descripcion_trgm_idx").using("gin", sql`${t.descripcion} gin_trgm_ops`),
+  ],
+);
+
+/** Auditoría de cada equipo: alta, cambios de asignación, de estado, etc. */
+export const equipoHistorial = pgTable(
+  "equipo_historial",
+  {
+    id: serial("id").primaryKey(),
+    equipoId: integer("equipo_id")
+      .notNull()
+      .references(() => equipos.id, { onDelete: "cascade" }),
+    usuarioId: integer("usuario_id").references(() => usuarios.id, { onDelete: "set null" }),
+    accion: text("accion").notNull(),
+    detalle: text("detalle"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("equipo_historial_equipo_idx").on(t.equipoId)],
 );
 
 /** Credenciales de integraciones externas (hoy: la cuenta de Mercado Libre de Compras). */
@@ -300,3 +350,6 @@ export type Lista = (typeof listaEnum.enumValues)[number];
 export const pedidoItemsRelations = relations(pedidoItems, ({ one }) => ({
   pedido: one(pedidos, { fields: [pedidoItems.pedidoId], references: [pedidos.id] }),
 }));
+
+export type Equipo = typeof equipos.$inferSelect;
+export type EstadoEquipo = (typeof estadoEquipoEnum.enumValues)[number];

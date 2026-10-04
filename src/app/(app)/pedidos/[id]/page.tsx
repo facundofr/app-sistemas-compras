@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ArrowLeftIcon, BanIcon, ExternalLinkIcon, InfoIcon, LockIcon, RepeatIcon, StarIcon } from "lucide-react";
+import { ArrowLeftIcon, BanIcon, ExternalLinkIcon, InfoIcon, LockIcon, MonitorIcon, RepeatIcon, StarIcon } from "lucide-react";
 import { AccionesPedido } from "@/components/pedidos/acciones";
 import { Adjuntos, SubirReferencias, type AdjuntoVista } from "@/components/pedidos/adjuntos";
 import { CompraForm } from "@/components/pedidos/compra-form";
@@ -25,10 +25,13 @@ import {
   puedeCancelar,
   puedeEditarPedido,
   puedeEliminar,
+  puedeGestionarInventario,
   puedeReactivar,
 } from "@/lib/permisos";
 import { ESTADO_ENVIO_ML } from "@/lib/mercadolibre";
-import { getOpciones, getPedido } from "@/lib/queries";
+import { equiposDePedido, getOpciones, getPedido } from "@/lib/queries";
+import { codigoEquipo } from "@/lib/equipos";
+import { EstadoEquipoChip } from "@/components/equipos/estado-equipo";
 import { cn } from "@/lib/utils";
 
 export async function generateMetadata(props: PageProps<"/pedidos/[id]">): Promise<Metadata> {
@@ -66,13 +69,19 @@ const ACCION_TEXTO: Record<string, string> = {
   reactivado: "Reactivó el pedido",
   adjunto: "Adjuntó archivos",
   adjunto_borrado: "Quitó un archivo",
+  recepcion: "Recibió productos",
+  equipos: "Registró equipos",
 };
 
 export default async function PedidoPage(props: PageProps<"/pedidos/[id]">) {
   const usuario = await requireUsuario();
   const { id: idParam } = await props.params;
   if (!/^\d+$/.test(idParam) || !esIdPedido(Number(idParam))) notFound();
-  const [p, opciones] = await Promise.all([getPedido(Number(idParam)), getOpciones()]);
+  const [p, opciones, equiposDelPedido] = await Promise.all([
+    getPedido(Number(idParam)),
+    getOpciones(),
+    equiposDePedido(Number(idParam)),
+  ]);
   if (!p) notFound();
 
   const compras = gestionaCompras(usuario.rol);
@@ -86,6 +95,7 @@ export default async function PedidoPage(props: PageProps<"/pedidos/[id]">) {
   const referencias = p.adjuntos.filter((a) => a.tipo === "referencia").map(vista);
   const facturas = p.adjuntos.filter((a) => a.tipo === "factura").map(vista);
   const fotosRecepcion = p.adjuntos.filter((a) => a.tipo === "recepcion").map(vista);
+  const recepcionParcial = p.estado === "Comprando" && !p.cancelado && p.recibidas > 0;
   const dias = diasDesde(p.estadoDesde);
 
   return (
@@ -215,6 +225,16 @@ export default async function PedidoPage(props: PageProps<"/pedidos/[id]">) {
                         <li key={i} className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 px-3 py-2">
                           <span className="font-mono text-[12.5px] font-semibold tabular">{it.cantidad} u.</span>
                           <span className="min-w-0 flex-1">{it.producto}</span>
+                          {p.estado === "Comprando" && p.recibidas > 0 && (
+                            <span
+                              className={cn(
+                                "rounded-full px-2 py-0.5 text-[11px] font-semibold",
+                                it.cantidadRecibida >= it.cantidad ? "bg-teal-soft text-primary" : "bg-muted text-muted-foreground",
+                              )}
+                            >
+                              {it.cantidadRecibida >= it.cantidad ? "Llegó" : `Llegaron ${it.cantidadRecibida} de ${it.cantidad}`}
+                            </span>
+                          )}
                           {it.link && (
                             <span className="w-full text-[12.5px] font-normal">
                               <Enlace href={it.link} />
@@ -272,6 +292,46 @@ export default async function PedidoPage(props: PageProps<"/pedidos/[id]">) {
         <div className="min-w-0 space-y-5">
           {!p.cancelado && p.estado === "Comprando" && <EtiquetaQr pedido={p} />}
 
+          {(equiposDelPedido.length > 0 || (!p.cancelado && (p.estado === "Entregado" || p.recibidas > 0) && puedeGestionarInventario(usuario.rol))) && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-[15.5px] font-bold">Equipos</CardTitle>
+                <CardDescription>
+                  {equiposDelPedido.length
+                    ? "Lo que se cargó al inventario desde esta compra."
+                    : "Si son equipos (notebooks, monitores...), registralos en el inventario con su número de serie."}
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {equiposDelPedido.length > 0 && (
+                  <ul className="divide-y rounded-lg border">
+                    {equiposDelPedido.map((e) => (
+                      <li key={e.id}>
+                        <Link href={`/equipos/${e.id}`} className="flex items-center gap-3 px-3 py-2.5 hover:bg-muted/50">
+                          <div className="min-w-0 flex-1">
+                            <div className="font-mono text-[11.5px] text-muted-foreground">
+                              {codigoEquipo(e.id)}
+                              {e.numeroSerie && ` · S/N ${e.numeroSerie}`}
+                            </div>
+                            <div className="truncate text-[13px] font-medium">{e.asignadoA || e.descripcion}</div>
+                          </div>
+                          <EstadoEquipoChip estado={e.estado} />
+                        </Link>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {puedeGestionarInventario(usuario.rol) && !p.cancelado && (p.estado === "Entregado" || p.recibidas > 0) && (
+                  <Button variant="outline" className="w-full" asChild>
+                    <Link href={`/equipos/nuevo?pedido=${p.id}`}>
+                      <MonitorIcon /> Registrar equipos
+                    </Link>
+                  </Button>
+                )}
+              </CardContent>
+            </Card>
+          )}
+
           <Card>
             <CardHeader>
               <CardTitle className="text-[15.5px] font-bold">Presupuesto del sector</CardTitle>
@@ -283,13 +343,27 @@ export default async function PedidoPage(props: PageProps<"/pedidos/[id]">) {
             </CardContent>
           </Card>
 
-          {(p.calificacion || p.comentarioRecepcion || fotosRecepcion.length > 0) && (
+          {(p.calificacion || p.comentarioRecepcion || fotosRecepcion.length > 0 || recepcionParcial) && (
             <Card>
               <CardHeader>
                 <CardTitle className="text-[15.5px] font-bold">Recepción</CardTitle>
-                <CardDescription>Cómo llegó, según quien lo recibió.</CardDescription>
+                <CardDescription>
+                  {recepcionParcial ? `Llegaron ${p.recibidas} de ${p.cantidad} unidades.` : "Cómo llegó, según quien lo recibió."}
+                </CardDescription>
               </CardHeader>
               <CardContent className="space-y-3">
+                {recepcionParcial && (
+                  <ul className="divide-y rounded-lg border text-[13px]">
+                    {p.items.map((it) => (
+                      <li key={it.id} className="flex items-center justify-between gap-2 px-3 py-2">
+                        <span className="min-w-0 truncate">{it.producto}</span>
+                        <span className="font-mono text-[12px] text-muted-foreground tabular">
+                          {it.cantidadRecibida}/{it.cantidad}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
                 {p.calificacion && (
                   <div className="flex items-center gap-0.5" aria-label={`${p.calificacion} de 5`}>
                     {[1, 2, 3, 4, 5].map((n) => (

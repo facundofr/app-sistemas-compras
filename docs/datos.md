@@ -32,6 +32,8 @@ erDiagram
   usuarios ||--o{ sesiones : "tiene"
   usuarios ||--o{ pedidos : "carga"
   pedidos ||--|{ pedido_items : "incluye"
+  pedidos ||--o{ equipos : "origina"
+  equipos ||--o{ equipo_historial : "registra"
   pedidos ||--o{ adjuntos : "tiene"
   usuarios ||--o{ notificaciones : "recibe"
   pedidos ||--o{ notificaciones : "sobre"
@@ -152,6 +154,8 @@ Cada cambio queda registrado con **quién** y **cuándo**. No se edita ni se bor
 | `compra` | Al guardar datos de compra | Qué campos cambiaron |
 | `adjunto` | Al subir archivos | Cuántos y de qué tipo |
 | `adjunto_borrado` | Al quitar un archivo | Nombre del archivo |
+| `recepcion` | Al recibir productos desde la etiqueta QR | Qué llegó y cuánto falta: «1× Notebook · faltan 2 u.» |
+| `equipos` | Al registrar equipos de este pedido en el inventario | Cuántos y sus códigos (`EQ-00001`, ...) |
 | `cancelado` / `reactivado` | Al cancelar o reactivar | Motivo de la cancelación |
 
 ### `pedido_items` — los productos de cada pedido
@@ -161,8 +165,27 @@ Cada cambio queda registrado con **quién** y **cuándo**. No se edita ni se bor
 | `pedido_id` | A qué pedido pertenece (se borra con el pedido) |
 | `orden` | Posición en el pedido |
 | `producto`, `cantidad`, `link` | Lo mismo que antes era un solo producto por pedido |
+| `cantidad_recibida` | Cuántas unidades ya llegaron (recepción parcial). El pedido pasa a «Entregado» cuando todas llegaron; marcarlo «Entregado» desde el detalle las completa |
 
 Los pedidos anteriores a esta tabla tienen un ítem cada uno, copiado de sus columnas `producto`, `cantidad` y `link`.
+
+### `equipos` — inventario de Sistemas
+
+| Columna | Qué guarda |
+|---|---|
+| `id` | Número del equipo. Se muestra como `EQ-00001` y es lo que abre su etiqueta QR (`/equipos/<id>`) |
+| `pedido_id`, `pedido_item_id` | De qué compra y de qué producto vino (vacío si se cargó a mano). Si se borra el pedido, el equipo queda sin vínculo |
+| `descripcion`, `numero_serie` | Qué es y su número de serie (único: no puede haber dos equipos con el mismo) |
+| `estado` | `en_uso` \| `en_deposito` \| `en_reparacion` \| `baja` |
+| `asignado_a`, `sector`, `ubicacion` | A quién se le dio y dónde está |
+| `fecha_alta`, `garantia_hasta` | Cuándo entró al inventario y hasta cuándo tiene garantía (se avisa en la lista 30 días antes) |
+| `notas`, `creado_por_id`, `created_at`, `updated_at` | Notas, quién lo cargó y cuándo |
+
+Lo gestionan Sistemas y Admin; el resto lo puede consultar.
+
+### `equipo_historial` — la vida de cada equipo
+
+Como `historial`, pero por equipo: `alta` (desde qué pedido), `asignacion` (de quién a quién: «Ana · IT → Juan · Contaduría»), `estado` («En uso → En reparación») y `edicion` (qué campos cambiaron).
 
 ### `notificaciones` — avisos de la campanita
 
@@ -170,7 +193,7 @@ Los pedidos anteriores a esta tabla tienen un ítem cada uno, copiado de sus col
 |---|---|
 | `usuario_id` | Para quién es |
 | `pedido_id` | Sobre qué pedido (al tocarla, se abre) |
-| `tipo` | `nuevo`, `estado_cotizando`, `estado_comprando`, `estado_entregado`, `fecha_estimada`, `trabado`, `atrasado`, `cancelado`, `ml_envio`, `ml_entregado` |
+| `tipo` | `nuevo`, `estado_cotizando`, `estado_comprando`, `estado_entregado`, `recepcion_parcial`, `fecha_estimada`, `trabado`, `atrasado`, `cancelado`, `ml_envio`, `ml_entregado` |
 | `titulo`, `cuerpo` | El texto del aviso (también se usa en el email y el push) |
 | `leida_en` | Cuándo la abrió; vacío = sin leer |
 

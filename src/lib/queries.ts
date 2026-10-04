@@ -3,6 +3,9 @@ import { and, asc, desc, eq, ilike, inArray, isNotNull, or, sql, type SQL } from
 import { db } from "@/db";
 import {
   adjuntos,
+  equipoHistorial,
+  equipos,
+  estadoEquipoEnum,
   historial,
   listaEnum,
   opciones,
@@ -10,12 +13,16 @@ import {
   pedidos,
   usuarios,
   type Estado,
+  type EstadoEquipo,
   type Lista,
   type Prioridad,
 } from "@/db/schema";
 import { ESTADOS, esIdPedido, PRIORIDADES } from "./constants";
 
 const TZ = "America/Argentina/Buenos_Aires";
+
+/** «texto» → «%texto%» para ILIKE, escapando los comodines que haya escrito la persona. */
+const patronLike = (q: string) => `%${q.replace(/[%_\\]/g, "\\$&")}%`;
 
 /* ---------------- Listas configurables ---------------- */
 
@@ -95,6 +102,10 @@ export async function contarPorEstado() {
 
 /* ---------------- Pedidos ---------------- */
 
+/** Unidades ya recibidas del pedido (recepción parcial). */
+const unidadesRecibidas = sql<number>`(select coalesce(sum(least(i.cantidad_recibida, i.cantidad)), 0)::int
+  from pedido_items i where i.pedido_id = "pedidos"."id")`;
+
 export type FiltrosPedidos = {
   q?: string;
   estado?: string;
@@ -107,7 +118,7 @@ export type FiltrosPedidos = {
 function wherePedidos(f: FiltrosPedidos) {
   const conds: SQL[] = [];
   if (f.q) {
-    const like = `%${f.q.replace(/[%_\\]/g, "\\$&")}%`;
+    const like = patronLike(f.q);
     const numero = Number(f.q.replace(/\D/g, ""));
     conds.push(
       or(
@@ -161,6 +172,7 @@ export async function listarPedidos(f: FiltrosPedidos, limite = 500) {
       fechaCompra: pedidos.fechaCompra,
       fechaEstimada: pedidos.fechaEstimada,
       fechaEntrega: pedidos.fechaEntrega,
+      recibidas: unidadesRecibidas,
       adjuntos: sql<number>`(select count(*)::int from adjuntos a where a.pedido_id = "pedidos"."id")`,
     })
     .from(pedidos)
@@ -221,13 +233,20 @@ export async function getPedido(id: number) {
       .where(eq(historial.pedidoId, id))
       .orderBy(desc(historial.createdAt), desc(historial.id)),
     db
-      .select({ producto: pedidoItems.producto, cantidad: pedidoItems.cantidad, link: pedidoItems.link })
+      .select({
+        id: pedidoItems.id,
+        producto: pedidoItems.producto,
+        cantidad: pedidoItems.cantidad,
+        link: pedidoItems.link,
+        cantidadRecibida: pedidoItems.cantidadRecibida,
+      })
       .from(pedidoItems)
       .where(eq(pedidoItems.pedidoId, id))
       .orderBy(asc(pedidoItems.orden), asc(pedidoItems.id)),
   ]);
 
-  return { ...row.p, creadoPor: row.creadoPor, adjuntos: archivos, historial: eventos, items };
+  const recibidas = items.reduce((s, i) => s + Math.min(i.cantidadRecibida, i.cantidad), 0);
+  return { ...row.p, creadoPor: row.creadoPor, adjuntos: archivos, historial: eventos, items, recibidas };
 }
 
 /* ---------------- Compras efectuadas ---------------- */
@@ -252,7 +271,7 @@ function whereCompras(f: FiltrosCompras) {
   if (f.empresa) conds.push(eq(pedidos.facturarPor, f.empresa));
   if (f.medioPago) conds.push(eq(pedidos.medioPago, f.medioPago));
   if (f.q) {
-    const like = `%${f.q.replace(/[%_\\]/g, "\\$&")}%`;
+    const like = patronLike(f.q);
     conds.push(
       or(
         ilike(pedidos.producto, like),
@@ -418,6 +437,7 @@ const columnasTarjeta = {
   fechaCompra: pedidos.fechaCompra,
   fechaEstimada: pedidos.fechaEstimada,
   fechaEntrega: pedidos.fechaEntrega,
+  recibidas: unidadesRecibidas,
 };
 export type PedidoTarjeta = Awaited<ReturnType<typeof tarjetas>>[number];
 
@@ -519,4 +539,83 @@ export async function productosFrecuentes(limite = 80) {
     .orderBy(desc(sql`count(*)`), asc(pedidoItems.producto))
     .limit(limite);
   return filas.map((f) => f.producto);
+}
+
+/* ---------------- Inventario de equipos ---------------- */
+
+export type FiltrosEquipos = { q?: string; estado?: string; sector?: string };
+
+function whereEquipos(f: FiltrosEquipos) {
+  const conds: SQL[] = [];
+  if (f.q) {
+    const like = patronLike(f.q);
+    const numero = Number(f.q.replace(/^EQ-?/i, "").replace(/\D/g, ""));
+    conds.push(
+      or(
+        ilike(equipos.descripcion, like),
+        ilike(equipos.numeroSerie, like),
+        ilike(equipos.asignadoA, like),
+        ilike(equipos.ubicacion, like),
+        ...(f.q.trim().length >= 4 ? [sql`${f.q} <% ${equipos.descripcion}`] : []),
+        ...(esIdPedido(numero) && /^(EQ-?)?\d+$/i.test(f.q.trim()) ? [eq(equipos.id, numero)] : []),
+      )!,
+    );
+  }
+  if (f.estado && (estadoEquipoEnum.enumValues as string[]).includes(f.estado)) {
+    conds.push(eq(equipos.estado, f.estado as EstadoEquipo));
+  }
+  if (f.sector) conds.push(eq(equipos.sector, f.sector));
+  return conds.length ? and(...conds) : undefined;
+}
+
+export async function listarEquipos(f: FiltrosEquipos, limite = 500) {
+  return db.select().from(equipos).where(whereEquipos(f)).orderBy(desc(equipos.id)).limit(limite);
+}
+
+export async function contarEquiposPorEstado() {
+  const filas = await db.select({ estado: equipos.estado, n: sql<number>`count(*)::int` }).from(equipos).groupBy(equipos.estado);
+  const out = Object.fromEntries(estadoEquipoEnum.enumValues.map((e) => [e, 0])) as Record<EstadoEquipo, number>;
+  for (const r of filas) out[r.estado] = r.n;
+  return out;
+}
+
+export async function sectoresDeEquipos() {
+  const filas = await db
+    .selectDistinct({ sector: equipos.sector })
+    .from(equipos)
+    .where(isNotNull(equipos.sector))
+    .orderBy(asc(equipos.sector));
+  return filas.map((f) => f.sector!);
+}
+
+export async function getEquipo(id: number) {
+  if (!esIdPedido(id)) return null;
+  const [e] = await db.select().from(equipos).where(eq(equipos.id, id)).limit(1);
+  if (!e) return null;
+  const [eventos, pedido] = await Promise.all([
+    db
+      .select({
+        id: equipoHistorial.id,
+        accion: equipoHistorial.accion,
+        detalle: equipoHistorial.detalle,
+        createdAt: equipoHistorial.createdAt,
+        usuario: usuarios.nombre,
+      })
+      .from(equipoHistorial)
+      .leftJoin(usuarios, eq(usuarios.id, equipoHistorial.usuarioId))
+      .where(eq(equipoHistorial.equipoId, id))
+      .orderBy(desc(equipoHistorial.createdAt), desc(equipoHistorial.id)),
+    e.pedidoId
+      ? db
+          .select({ id: pedidos.id, producto: pedidos.producto, proveedor: pedidos.proveedor, fechaCompra: pedidos.fechaCompra })
+          .from(pedidos)
+          .where(eq(pedidos.id, e.pedidoId))
+          .then((r) => r[0] ?? null)
+      : null,
+  ]);
+  return { ...e, historial: eventos, pedido };
+}
+
+export async function equiposDePedido(pedidoId: number) {
+  return db.select().from(equipos).where(eq(equipos.pedidoId, pedidoId)).orderBy(asc(equipos.id));
 }

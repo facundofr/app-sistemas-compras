@@ -15,7 +15,7 @@ test("en el celular: menú inferior con el botón QR y filtros en un panel", asy
 
   await nav.getByRole("link", { name: "QR" }).click();
   await expect(page.getByRole("heading", { name: "Escanear etiqueta" })).toBeVisible();
-  await expect(page.getByLabel("Código del pedido")).toBeVisible();
+  await expect(page.getByLabel("Código de la etiqueta")).toBeVisible();
 });
 
 test("Recepción ve «Por recibir» en lugar de «Nuevo»", async ({ page }) => {

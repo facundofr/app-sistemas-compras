@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { BanIcon, CircleCheckBigIcon, ClockIcon, ScanLineIcon } from "lucide-react";
+import { BanIcon, CircleCheckBigIcon, ClockIcon, MonitorIcon, ScanLineIcon } from "lucide-react";
 import { ConfirmarEntrega } from "@/components/pedidos/confirmar-entrega";
 import { EstadoChip, PrioridadChip } from "@/components/pedidos/estado";
 import { FraseEstado } from "@/components/pedidos/frase-estado";
@@ -10,8 +10,9 @@ import { Card, CardContent } from "@/components/ui/card";
 import { requireUsuario } from "@/lib/auth";
 import { esIdPedido } from "@/lib/constants";
 import { codigoPedido, fmtDate, fmtDateTime } from "@/lib/format";
-import { puedeCambiarEstado } from "@/lib/permisos";
+import { puedeCambiarEstado, puedeGestionarInventario } from "@/lib/permisos";
 import { getPedido } from "@/lib/queries";
+import { resumenRecepcion } from "@/lib/recepcion";
 
 export const metadata: Metadata = { title: "Confirmar entrega" };
 
@@ -30,6 +31,7 @@ export default async function RecibirPage(props: PageProps<"/pedidos/[id]/recibi
   // Desde el QR solo se confirma lo que ya se compró, aunque Compras pueda saltear etapas desde el detalle.
   const confirmable = p.estado === "Comprando" && puedeCambiarEstado(usuario, p, "Entregado");
   const entrega = p.historial.find((h) => h.accion === "estado" && h.detalle?.endsWith("→ Entregado"));
+  const parcial = resumenRecepcion(p.items).parcial;
 
   return (
     <div className="mx-auto max-w-md">
@@ -76,6 +78,26 @@ export default async function RecibirPage(props: PageProps<"/pedidos/[id]/recibi
               </div>
             )}
           </dl>
+          {(p.items.length > 1 || parcial) && (
+            <ul className="mt-4 divide-y rounded-lg border text-[13px]">
+              {p.items.map((it) => {
+                const listo = it.cantidadRecibida >= it.cantidad;
+                return (
+                  <li key={it.id} className="flex items-center gap-2.5 px-3 py-2">
+                    {listo ? (
+                      <CircleCheckBigIcon className="size-4 shrink-0 text-primary" />
+                    ) : (
+                      <ClockIcon className="size-4 shrink-0 text-muted-foreground" />
+                    )}
+                    <span className={listo ? "min-w-0 flex-1" : "min-w-0 flex-1 font-medium"}>{it.producto}</span>
+                    <span className="font-mono text-[12px] text-muted-foreground tabular">
+                      {it.cantidadRecibida}/{it.cantidad}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
         </CardContent>
 
         <div className="border-t px-5 py-5">
@@ -90,7 +112,7 @@ export default async function RecibirPage(props: PageProps<"/pedidos/[id]/recibi
                 : `Recibido el ${fmtDate(p.fechaEntrega)}.`}
             </Aviso>
           ) : confirmable ? (
-            <ConfirmarEntrega id={p.id} seguido={seguido} />
+            <ConfirmarEntrega id={p.id} seguido={seguido} items={p.items} />
           ) : (
             <Aviso icono={<ClockIcon />} tono="info" titulo={`Todavía está en «${p.estado}»`}>
               Compras aún no marcó la compra como hecha. La entrega se puede confirmar cuando el pedido esté en
@@ -100,7 +122,15 @@ export default async function RecibirPage(props: PageProps<"/pedidos/[id]/recibi
         </div>
       </Card>
 
-      <div className="mt-4 grid grid-cols-2 gap-2">
+      {puedeGestionarInventario(usuario.rol) && !p.cancelado && (p.estado === "Entregado" || p.recibidas > 0) && (
+        <Button variant="outline" className="mt-4 w-full" asChild>
+          <Link href={`/equipos/nuevo?pedido=${p.id}`}>
+            <MonitorIcon /> Registrar equipos en el inventario
+          </Link>
+        </Button>
+      )}
+
+      <div className="mt-2 grid grid-cols-2 gap-2">
         <Button variant="outline" asChild>
           <Link href={`/pedidos/${p.id}`}>Ver el pedido</Link>
         </Button>

@@ -11,6 +11,7 @@ import { ARCHIVOS_MAX_POR_ENVIO, esIdPedido, ESTADOS, PRIORIDADES, SELECT_VACIO 
 import { codigoPedido, fmtDate, hoyISO } from "@/lib/format";
 import { filasDeItems, ITEMS_MAX, resumenItems, type ItemPedido } from "@/lib/items";
 import { idsDeCompras, notificar } from "@/lib/notificaciones";
+import { aplicarRecepcion, detalleRecibidos } from "@/lib/recepcion";
 import {
   puedeAdjuntarReferencia,
   puedeBorrarAdjunto,
@@ -121,9 +122,13 @@ function parsearPedido(formData: FormData) {
   };
 }
 
-async function guardarItems(pedidoId: number, items: ItemPedido[]) {
-  await db.delete(pedidoItems).where(eq(pedidoItems.pedidoId, pedidoId));
-  await db.insert(pedidoItems).values(items.map((it, orden) => ({ ...it, pedidoId, orden })));
+/** La base o una transacción en curso: lo que se escribe junto tiene que quedar todo o nada. */
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+type Ejecutor = typeof db | Tx;
+
+async function guardarItems(tx: Ejecutor, pedidoId: number, items: ItemPedido[]) {
+  await tx.delete(pedidoItems).where(eq(pedidoItems.pedidoId, pedidoId));
+  await tx.insert(pedidoItems).values(items.map((it, orden) => ({ ...it, pedidoId, orden })));
 }
 
 const compraSchema = z.object({
@@ -207,8 +212,14 @@ async function cargarPedido(id: number) {
   return p ?? null;
 }
 
-async function registrar(pedidoId: number, usuario: UsuarioSesion, accion: string, detalle?: string) {
-  await db.insert(historial).values({ pedidoId, usuarioId: usuario.id, accion, detalle });
+async function registrar(
+  pedidoId: number,
+  usuario: UsuarioSesion,
+  accion: string,
+  detalle?: string,
+  tx: Ejecutor = db,
+) {
+  await tx.insert(historial).values({ pedidoId, usuarioId: usuario.id, accion, detalle });
 }
 
 async function guardarAdjuntos(
@@ -251,17 +262,22 @@ export async function crearPedido(_prev: FormState, formData: FormData): Promise
   const parsed = parsearPedido(formData);
   if (!parsed.ok) return parsed.estado;
 
-  const [nuevo] = await db
-    .insert(pedidos)
-    .values({ ...parsed.data, creadoPorId: usuario.id })
-    .returning({ id: pedidos.id });
-  await guardarItems(nuevo.id, parsed.items);
-  await registrar(
-    nuevo.id,
-    usuario,
-    "creado",
-    parsed.items.length > 1 ? `Pedido cargado con ${parsed.items.length} productos` : "Pedido cargado",
-  );
+  // Pedido, productos e historial juntos: si algo falla, no queda un pedido sin productos.
+  const nuevo = await db.transaction(async (tx) => {
+    const [n] = await tx
+      .insert(pedidos)
+      .values({ ...parsed.data, creadoPorId: usuario.id })
+      .returning({ id: pedidos.id });
+    await guardarItems(tx, n.id, parsed.items);
+    await registrar(
+      n.id,
+      usuario,
+      "creado",
+      parsed.items.length > 1 ? `Pedido cargado con ${parsed.items.length} productos` : "Pedido cargado",
+      tx,
+    );
+    return n;
+  });
 
   let aviso: string | undefined;
   try {
@@ -313,10 +329,20 @@ export async function actualizarPedido(_prev: FormState, formData: FormData): Pr
   const { producto, cantidad, link, ...resto } = parsed.data;
   const cambios = [...camposCambiados(p, resto), ...(itemsCambiaron ? ["Productos"] : [])];
   if (!cambios.length) return { ok: true, stamp: Date.now(), mensaje: "No había cambios para guardar." };
-  await db.update(pedidos).set({ ...resto, producto, cantidad, link }).where(eq(pedidos.id, id));
-  if (itemsCambiaron) await guardarItems(id, parsed.items);
-  await registrar(id, usuario, "edicion", `Cambió: ${cambios.join(", ")}`);
+  // Todo junto, y solo si nadie lo movió de etapa o lo canceló mientras se editaba.
+  const guardado = await db.transaction(async (tx) => {
+    const filas = await tx
+      .update(pedidos)
+      .set({ ...resto, producto, cantidad, link })
+      .where(and(eq(pedidos.id, id), eq(pedidos.estado, p.estado), eq(pedidos.cancelado, false)))
+      .returning({ id: pedidos.id });
+    if (!filas.length) return false;
+    if (itemsCambiaron) await guardarItems(tx, id, parsed.items);
+    await registrar(id, usuario, "edicion", `Cambió: ${cambios.join(", ")}`, tx);
+    return true;
+  });
   refrescar();
+  if (!guardado) return { error: "Otra persona acaba de modificar este pedido. Revisá su estado actual." };
   return { ok: true, stamp: Date.now(), mensaje: "Datos del pedido guardados." };
 }
 
@@ -398,23 +424,31 @@ async function moverEstado(usuario: UsuarioSesion, id: number, destino: Estado, 
     };
   }
   const hoy = hoyISO();
-  // Solo si sigue en la etapa que se leyó: un doble clic o dos personas a la vez no duplican el cambio.
-  const movidos = await db
-    .update(pedidos)
-    .set({
-      estado: destino,
-      estadoDesde: new Date(),
-      ...(destino === "Comprando" && !p.fechaCompra ? { fechaCompra: hoy } : {}),
-      ...(destino === "Entregado" && !p.fechaEntrega ? { fechaEntrega: hoy } : {}),
-      ...(destino === "Entregado" ? recepcion : {}),
-    })
-    .where(and(eq(pedidos.id, id), eq(pedidos.estado, p.estado), eq(pedidos.cancelado, false)))
-    .returning({ id: pedidos.id });
-  if (!movidos.length) {
+  const movido = await db.transaction(async (tx) => {
+    // Solo si sigue en la etapa que se leyó: un doble clic o dos personas a la vez no duplican el cambio.
+    const filas = await tx
+      .update(pedidos)
+      .set({
+        estado: destino,
+        estadoDesde: new Date(),
+        ...(destino === "Comprando" && !p.fechaCompra ? { fechaCompra: hoy } : {}),
+        ...(destino === "Entregado" && !p.fechaEntrega ? { fechaEntrega: hoy } : {}),
+        ...(destino === "Entregado" ? recepcion : {}),
+      })
+      .where(and(eq(pedidos.id, id), eq(pedidos.estado, p.estado), eq(pedidos.cancelado, false)))
+      .returning({ id: pedidos.id });
+    if (!filas.length) return false;
+    // Marcado como entregado (desde el detalle o al completar la recepción): todo lo pedido quedó recibido.
+    if (destino === "Entregado") {
+      await tx.update(pedidoItems).set({ cantidadRecibida: pedidoItems.cantidad }).where(eq(pedidoItems.pedidoId, id));
+    }
+    await registrar(id, usuario, "estado", `${p.estado} → ${destino}`, tx);
+    return true;
+  });
+  if (!movido) {
     refrescar();
     return { error: "Otra persona acaba de modificar este pedido. Revisá su estado actual." };
   }
-  await registrar(id, usuario, "estado", `${p.estado} → ${destino}`);
 
   const aviso = { pedidoId: id, tipo: `estado_${destino.toLowerCase()}`, ...avisoDeEtapa(p, destino, usuario.nombre) };
   // La entrega también le importa a Compras (cierra el circuito); el resto, solo a quien lo pidió.
@@ -446,22 +480,88 @@ export async function confirmarEntrega(_prev: FormState, formData: FormData): Pr
   const parsed = recepcionSchema.safeParse(datosDe(formData, ["calificacion", "comentarioRecepcion"]));
   if (!parsed.success) return erroresDe(parsed.error);
 
-  const r = await moverEstado(usuario, id, "Entregado", parsed.data);
-  if (r.error) {
+  const p = await cargarPedido(id);
+  if (!p) return { error: "El pedido no existe." };
+  if (p.estado !== "Comprando" || !puedeCambiarEstado(usuario, p, "Entregado")) {
+    return { error: "Solo se puede confirmar la entrega cuando el pedido ya está comprado." };
+  }
+
+  // Con detalle por producto (llego_<id>) es una recepción parcial; sin detalle, llegó todo lo pendiente.
+  const conDetalle = [...formData.keys()].some((k) => k.startsWith("llego_"));
+  const llegaron = conDetalle
+    ? new Map(
+        [...formData.entries()]
+          .filter(([k]) => k.startsWith("llego_"))
+          .map(([k, v]) => [Number(k.slice(6)), Number(v) || 0] as const),
+      )
+    : undefined;
+
+  type Resultado = { error: string } | { completo: boolean; detalle: string; faltan: number };
+  const r: Resultado = await db.transaction(async (tx) => {
+    // Bloquea el pedido: dos personas recibiendo a la vez no suman dos veces lo mismo.
+    const [actual] = await tx.select().from(pedidos).where(eq(pedidos.id, id)).for("update");
+    if (!actual || actual.cancelado || actual.estado !== "Comprando") {
+      return { error: "Otra persona acaba de modificar este pedido. Revisá su estado actual." };
+    }
+    const items = await tx
+      .select({ id: pedidoItems.id, producto: pedidoItems.producto, cantidad: pedidoItems.cantidad, cantidadRecibida: pedidoItems.cantidadRecibida })
+      .from(pedidoItems)
+      .where(eq(pedidoItems.pedidoId, id))
+      .orderBy(asc(pedidoItems.orden), asc(pedidoItems.id));
+    const rec = aplicarRecepcion(items, llegaron);
+    if (!rec.recibidosAhora.length) return { error: "Marcá qué productos llegaron." };
+    for (const it of rec.recibidosAhora) {
+      await tx.update(pedidoItems).set({ cantidadRecibida: it.cantidadRecibida }).where(eq(pedidoItems.id, it.id));
+    }
+    const detalle = detalleRecibidos(rec.recibidosAhora);
+    if (rec.completo) {
+      await tx
+        .update(pedidos)
+        .set({ estado: "Entregado", estadoDesde: new Date(), ...(actual.fechaEntrega ? {} : { fechaEntrega: hoyISO() }), ...parsed.data })
+        .where(eq(pedidos.id, id));
+      if (rec.total > 1 || rec.recibidosAhora.length < rec.total) await registrar(id, usuario, "recepcion", `Llegó: ${detalle}`, tx);
+      await registrar(id, usuario, "estado", "Comprando → Entregado", tx);
+    } else {
+      await registrar(id, usuario, "recepcion", `Llegó: ${detalle} · faltan ${rec.unidades - rec.recibidas} u.`, tx);
+    }
+    return { completo: rec.completo, detalle, faltan: rec.unidades - rec.recibidas };
+  });
+  if ("error" in r) {
     refrescar();
     return { error: r.error };
   }
+
+  const destinatarios = [...(p.creadoPorId ? [p.creadoPorId] : []), ...(await idsDeCompras())];
+  await notificar(
+    destinatarios,
+    r.completo
+      ? { pedidoId: id, tipo: "estado_entregado", ...avisoDeEtapa(p, "Entregado", usuario.nombre) }
+      : {
+          pedidoId: id,
+          tipo: "recepcion_parcial",
+          titulo: `Llegó una parte: ${p.producto}`,
+          cuerpo: `${usuario.nombre} recibió ${r.detalle} de ${codigoPedido(id)}. Faltan ${r.faltan} unidad(es).`,
+        },
+    usuario.id,
+  );
+
   let aviso: string | undefined;
   try {
     const g = await guardarAdjuntos(formData, "fotos", id, "recepcion", usuario);
     if (g.length) await registrar(id, usuario, "adjunto", `${g.length} foto(s) de la recepción`);
   } catch (err) {
     if (!(err instanceof ArchivoInvalido)) throw err;
-    aviso = `La entrega quedó confirmada, pero no se guardó la foto: ${err.message}`;
+    aviso = `La recepción quedó registrada, pero no se guardó la foto: ${err.message}`;
   }
   refrescar();
   if (aviso) return { error: aviso, stamp: Date.now() };
-  return { ok: true, stamp: Date.now(), mensaje: `${codigoPedido(id)} entregado. ¡Gracias!` };
+  return {
+    ok: true,
+    stamp: Date.now(),
+    mensaje: r.completo
+      ? `${codigoPedido(id)} entregado. ¡Gracias!`
+      : `Recepción parcial registrada. Faltan ${r.faltan} unidad(es) de ${codigoPedido(id)}.`,
+  };
 }
 
 export async function cancelarPedido(id: number, motivo: string): Promise<FormState> {

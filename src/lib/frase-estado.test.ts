@@ -24,6 +24,10 @@ describe("frase de estado", () => {
     const f = fraseEstado({ ...base, estado: "Comprando", fechaEstimada: "2026-10-02" }, HOY);
     expect(f).toEqual({ texto: "Atrasado: tenía que llegar el 02/10", tono: "alerta" });
   });
+  it("recepción parcial", () => {
+    const f = fraseEstado({ ...base, estado: "Comprando", fechaEstimada: "2026-10-08", cantidad: 4, recibidas: 2 }, HOY);
+    expect(f.texto).toBe("Llegó una parte: 2 de 4 unidades");
+  });
   it("entregado y cancelado", () => {
     expect(fraseEstado({ ...base, estado: "Entregado", fechaEntrega: "2026-10-03" }, HOY).texto).toBe("Entregado el 03/10");
     expect(fraseEstado({ ...base, estado: "Comprando", cancelado: true }, HOY).tono).toBe("apagado");

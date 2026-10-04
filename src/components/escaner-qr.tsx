@@ -6,7 +6,8 @@ import { CameraOffIcon, Loader2Icon, SearchIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
-import { idDesdeTexto, rutaRecibir } from "@/lib/qr-texto";
+import { rutaEquipo } from "@/lib/equipos";
+import { destinoDesdeTexto, rutaRecibir } from "@/lib/qr-texto";
 
 // BarcodeDetector todavía no está en los tipos de TypeScript.
 type Detector = { detect: (src: CanvasImageSource) => Promise<{ rawValue: string }[]> };
@@ -53,7 +54,9 @@ export function EscanerQr({ seguidoInicial = false }: { seguidoInicial?: boolean
   useEffect(() => {
     seguidoRef.current = seguido;
   }, [seguido]);
-  const destino = (id: number) => rutaRecibir(id) + (seguidoRef.current ? "?seguido=1" : "");
+  // Etiqueta de pedido → confirmar la entrega; de equipo → su ficha del inventario.
+  const destino = (d: { tipo: "pedido" | "equipo"; id: number }) =>
+    d.tipo === "equipo" ? rutaEquipo(d.id) : rutaRecibir(d.id) + (seguidoRef.current ? "?seguido=1" : "");
   const video = useRef<HTMLVideoElement>(null);
   const [estado, setEstado] = useState<"iniciando" | "leyendo" | "abriendo" | "error">("iniciando");
   const [error, setError] = useState("");
@@ -88,7 +91,7 @@ export function EscanerQr({ seguidoInicial = false }: { seguidoInicial?: boolean
         if (v.readyState >= v.HAVE_ENOUGH_DATA) {
           const texto = await leer(v).catch(() => null);
           if (texto && activo) {
-            const id = idDesdeTexto(texto);
+            const id = destinoDesdeTexto(texto);
             if (id) {
               activo = false;
               navigator.vibrate?.(60);
@@ -98,7 +101,7 @@ export function EscanerQr({ seguidoInicial = false }: { seguidoInicial?: boolean
             }
             if (texto !== ultimoInvalido) {
               ultimoInvalido = texto;
-              setAviso("Ese código no es una etiqueta de pedido.");
+              setAviso("Ese código no es una etiqueta de pedido ni de equipo.");
             }
           }
         }
@@ -118,7 +121,7 @@ export function EscanerQr({ seguidoInicial = false }: { seguidoInicial?: boolean
     };
   }, [router]);
 
-  const idManual = idDesdeTexto(manual);
+  const idManual = destinoDesdeTexto(manual);
 
   return (
     <div className="space-y-5">
@@ -170,10 +173,10 @@ export function EscanerQr({ seguidoInicial = false }: { seguidoInicial?: boolean
         <Input
           value={manual}
           onChange={(e) => setManual(e.target.value)}
-          placeholder="O escribí el código: PED-00042"
+          placeholder="O escribí el código: PED-00042 o EQ-00007"
           inputMode="text"
           autoCapitalize="characters"
-          aria-label="Código del pedido"
+          aria-label="Código de la etiqueta"
         />
         <Button type="submit" variant="outline" disabled={!idManual}>
           <SearchIcon /> Ir

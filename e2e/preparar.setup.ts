@@ -8,7 +8,7 @@ setup("preparar la base", async () => {
   const db = new pg.Client({ connectionString: process.env.E2E_DATABASE_URL ?? "postgres://pedidos:pedidos@localhost:5433/pedidos_e2e" });
   await db.connect();
   try {
-    await db.query("truncate pedidos, notificaciones, intentos_login, suscripciones_push restart identity cascade");
+    await db.query("truncate pedidos, equipos, notificaciones, intentos_login, suscripciones_push restart identity cascade");
     for (const u of Object.values(USUARIOS)) {
       await db.query(
         `insert into usuarios (nombre, email, password_hash, rol) values ($1, $2, $3, $4)

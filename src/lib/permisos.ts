@@ -50,3 +50,6 @@ export function puedeBorrarAdjunto(u: U, p: P, subidoPorId: number | null) {
   if (gestionaCompras(u.rol)) return true;
   return subidoPorId === u.id && p.estado === "Solicitado" && !p.cancelado;
 }
+
+/** El inventario de equipos lo lleva Sistemas (y Admin); el resto lo puede consultar. */
+export const puedeGestionarInventario = (rol: Rol) => rol === "admin" || rol === "sistemas";

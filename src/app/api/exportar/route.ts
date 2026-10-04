@@ -2,7 +2,8 @@ import type { NextRequest } from "next/server";
 import ExcelJS from "exceljs";
 import { getUsuarioActual } from "@/lib/auth";
 import { codigoPedido, hoyISO } from "@/lib/format";
-import { itemsDePedidos, listarCompras, pedidosParaExportar } from "@/lib/queries";
+import { codigoEquipo, ESTADOS_EQUIPO } from "@/lib/equipos";
+import { itemsDePedidos, listarCompras, listarEquipos, pedidosParaExportar } from "@/lib/queries";
 
 const MONEY = '"$"#,##0.00';
 const FECHA = "dd/mm/yyyy";
@@ -37,11 +38,47 @@ function agrupar<T>(filas: T[], clave: (f: T) => string, monto: (f: T) => number
 export async function GET(req: NextRequest) {
   if (!(await getUsuarioActual())) return new Response("No autorizado", { status: 401 });
   const sp = req.nextUrl.searchParams;
-  const tipo = sp.get("tipo") === "compras" ? "compras" : "pedidos";
+  const t = sp.get("tipo");
+  const tipo = t === "compras" || t === "equipos" ? t : "pedidos";
   const wb = new ExcelJS.Workbook();
   wb.creator = "Pedidos Sistemas";
 
-  if (tipo === "pedidos") {
+  if (tipo === "equipos") {
+    const filas = await listarEquipos(
+      { q: sp.get("q") ?? undefined, estado: sp.get("estado") ?? undefined, sector: sp.get("sector") ?? undefined },
+      100_000,
+    );
+    hoja(
+      wb,
+      "Inventario",
+      [
+        { header: "Código", key: "codigo", width: 11 },
+        { header: "Equipo", key: "descripcion", width: 40 },
+        { header: "N° de serie", key: "serie", width: 22 },
+        { header: "Estado", key: "estado", width: 14 },
+        { header: "Asignado a", key: "asignadoA", width: 24 },
+        { header: "Sector", key: "sector", width: 18 },
+        { header: "Ubicación", key: "ubicacion", width: 24 },
+        { header: "Alta", key: "alta", width: 12, style: { numFmt: FECHA } },
+        { header: "Garantía hasta", key: "garantia", width: 14, style: { numFmt: FECHA } },
+        { header: "Pedido", key: "pedido", width: 12 },
+        { header: "Notas", key: "notas", width: 30 },
+      ],
+      filas.map((e) => ({
+        codigo: codigoEquipo(e.id),
+        descripcion: e.descripcion,
+        serie: e.numeroSerie,
+        estado: ESTADOS_EQUIPO[e.estado].nombre,
+        asignadoA: e.asignadoA,
+        sector: e.sector,
+        ubicacion: e.ubicacion,
+        alta: aFecha(e.fechaAlta),
+        garantia: aFecha(e.garantiaHasta),
+        pedido: e.pedidoId ? codigoPedido(e.pedidoId) : null,
+        notas: e.notas,
+      })),
+    );
+  } else if (tipo === "pedidos") {
     const filas = await pedidosParaExportar({
       q: sp.get("q") ?? undefined,
       estado: sp.get("estado") ?? undefined,

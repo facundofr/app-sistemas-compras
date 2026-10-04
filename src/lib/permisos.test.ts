@@ -8,6 +8,7 @@ import {
   puedeEditarCompra,
   puedeEditarPedido,
   puedeEliminar,
+  puedeGestionarInventario,
   puedeReactivar,
 } from "./permisos";
 
@@ -75,5 +76,14 @@ describe("adjuntos", () => {
     expect(puedeBorrarAdjunto(creador, pedido("Cotizando"), creador.id)).toBe(false);
     expect(puedeBorrarAdjunto(otro, pedido("Solicitado"), creador.id)).toBe(false);
     expect(puedeBorrarAdjunto(compras, pedido("Entregado"), creador.id)).toBe(true);
+  });
+});
+
+describe("inventario", () => {
+  it("lo gestionan Sistemas y Admin", () => {
+    expect(puedeGestionarInventario("sistemas")).toBe(true);
+    expect(puedeGestionarInventario("admin")).toBe(true);
+    expect(puedeGestionarInventario("compras")).toBe(false);
+    expect(puedeGestionarInventario("recepcion")).toBe(false);
   });
 });

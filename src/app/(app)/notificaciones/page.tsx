@@ -6,8 +6,10 @@ import {
   CalendarClockIcon,
   CheckCheckIcon,
   CircleCheckBigIcon,
+  PackageOpenIcon,
   PlusIcon,
   ShoppingCartIcon,
+  TruckIcon,
 } from "lucide-react";
 import { marcarTodasLeidas } from "@/actions/notificaciones";
 import { ActivarPush } from "@/components/activar-push";
@@ -31,6 +33,9 @@ const ICONO: Record<string, React.ComponentType<{ className?: string }>> = {
   trabado: AlertTriangleIcon,
   atrasado: AlertTriangleIcon,
   cancelado: BanIcon,
+  recepcion_parcial: PackageOpenIcon,
+  ml_envio: TruckIcon,
+  ml_entregado: CircleCheckBigIcon,
 };
 
 export default async function NotificacionesPage() {

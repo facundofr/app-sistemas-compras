@@ -10,6 +10,9 @@ type P = {
   fechaCompra: string | null;
   fechaEntrega: string | null;
   proveedor?: string | null;
+  /** Recepción parcial: unidades ya recibidas de `cantidad` (el total pedido). */
+  cantidad?: number;
+  recibidas?: number;
 };
 
 const DIA = 86_400_000;
@@ -33,6 +36,9 @@ export function fraseEstado(p: P, hoy: string): FraseEstado {
       return { texto: p.fechaEntrega ? `Entregado el ${corta(p.fechaEntrega)}` : "Entregado", tono: "ok" };
     case "Comprando": {
       const desde = p.proveedor ? ` · ${p.proveedor}` : "";
+      if (p.recibidas && p.cantidad && p.recibidas < p.cantidad) {
+        return { texto: `Llegó una parte: ${p.recibidas} de ${p.cantidad} unidades`, tono: "info" };
+      }
       if (!p.fechaEstimada) {
         return { texto: `Comprado${p.fechaCompra ? ` el ${corta(p.fechaCompra)}` : ""}, esperando la entrega${desde}`, tono: "info" };
       }
